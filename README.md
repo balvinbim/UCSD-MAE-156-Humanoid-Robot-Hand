@@ -20,7 +20,7 @@ The OpenRB-150 communicates with the computer over USB. ROS2 nodes send position
 
 Basic communication flow:
 
-```text
+
 Ubuntu Computer
     |
     | USB Serial

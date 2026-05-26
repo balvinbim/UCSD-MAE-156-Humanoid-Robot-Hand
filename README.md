@@ -1,9 +1,5 @@
 # UCSD MAE 156 Humanoid Robot Hand
 
-ROS2 workspace for controlling the humanoid robot hand using Dynamixel motors and OpenRB-150.
-
-# UCSD MAE 156 Humanoid Robot Hand
-
 This repository contains the ROS2 software framework for controlling a humanoid robot hand tool interface using an OpenRB-150 controller and four Dynamixel motors.
 
 The system was developed to actuate and test a robotic hand/tool mechanism for integration with a humanoid robot platform. The ROS2 package provides motor communication, motor homing, motor position feedback, manual keyboard control, and RViz-based interactive marker control.
@@ -37,7 +33,7 @@ Four Dynamixel Motors
     |
     v
 Humanoid Robot Hand Tool Mechanism
-2. Repository Structure
+## 2. Repository Structure
 
 Expected workspace structure:
 
@@ -58,7 +54,7 @@ robotis_ws/
 The main ROS2 package is:
 
 hand_for_humanoid_robot
-3. Required Hardware
+## 3. Required Hardware
 
 Another lab attempting to reproduce this system should prepare the following hardware:
 
@@ -75,7 +71,7 @@ Optional VR/Oculus controller	Future teleoperation input
 Current motor type used in development:
 
 Dynamixel XC330-T181-T
-4. Required Software
+## 4. Required Software
 
 This project was developed using:
 
@@ -94,7 +90,8 @@ sudo apt install python3-colcon-common-extensions python3-pip git
 Install the Dynamixel SDK for Python:
 
 pip3 install dynamixel-sdk
-5. Clone the Repository
+
+## 5. Clone the Repository
 
 Create or enter a ROS2 workspace:
 
@@ -108,7 +105,8 @@ git clone https://github.com/balvinbim/UCSD-MAE-156-Humanoid-Robot-Hand.git
 The final structure should look like:
 
 ~/robotis_ws/src/hand_for_humanoid_robot
-6. Build the ROS2 Package
+
+## 6. Build the ROS2 Package
 
 From the workspace root:
 
@@ -120,7 +118,8 @@ Optional: add the workspace source command to .bashrc:
 
 echo "source ~/robotis_ws/install/setup.bash" >> ~/.bashrc
 source ~/.bashrc
-7. Hardware Connection Procedure
+
+## 7. Hardware Connection Procedure
 
 Before running any nodes:
 
@@ -143,7 +142,7 @@ A stable device path may look similar to:
 
 If the code uses a specific serial path, update the device_name parameter in the node or launch file.
 
-8. Motor Configuration
+## 8. Motor Configuration
 
 Each motor should have a unique Dynamixel ID.
 
@@ -163,7 +162,8 @@ Confirm each motor has a unique ID.
 Confirm the baud rate matches the code.
 Confirm the motors are in position control or extended position control mode, depending on the node.
 Confirm motor directions and limits are safe for the mechanical tool.
-9. Safety Warning
+
+## 9. Safety Warning
 
 This system controls physical motors connected to a mechanical tool. Incorrect motor commands can damage the tool or cause injury.
 
@@ -176,7 +176,8 @@ Verify home positions before inserting the tool.
 Use low speeds during initial testing.
 Confirm software limits match the mechanical limits.
 Be ready to disconnect motor power if the mechanism moves unexpectedly.
-10. Main ROS2 Nodes
+
+## 10. Main ROS2 Nodes
 
 The package contains several ROS2 nodes. Each node is responsible for a different part of the control system.
 
@@ -185,7 +186,8 @@ To view all available nodes:
 cd ~/robotis_ws
 source install/setup.bash
 ros2 pkg executables hand_for_humanoid_robot
-10.1 Auto Zero Node
+
+# 10.1 Auto Zero Node
 Purpose
 
 The auto zero node moves all motors to predefined home positions. This establishes a known starting configuration before tool insertion or operation.
@@ -223,7 +225,7 @@ Expected Result
 
 All motors should move to their defined home positions and stop.
 
-10.2 Keyboard Control Node
+# 10.2 Keyboard Control Node
 Purpose
 
 The keyboard control node allows manual control of the motors using keyboard inputs. This is useful for early testing, debugging, and checking individual motor movement.
@@ -255,7 +257,7 @@ Notes for New Labs
 
 Before using this node with the tool attached, test with the motors unloaded or with the mechanism disconnected. Confirm that positive and negative motion directions match the mechanical design.
 
-10.3 Motor Position Publisher Node
+# 10.3 Motor Position Publisher Node
 Purpose
 
 The motor position publisher node reads the current encoder position of each Dynamixel motor and publishes the positions to a ROS2 topic.
@@ -295,7 +297,7 @@ Expected Result
 
 The terminal should display motor position values for each motor.
 
-10.4 RViz Interactive Marker Control Node
+# 10.4 RViz Interactive Marker Control Node
 Purpose
 
 The RViz interactive marker control node allows a user to control the motors visually through RViz. Interactive marker rings are rotated in RViz, and the node converts marker rotation into motor position commands.
@@ -335,7 +337,7 @@ Notes for New Labs
 
 The current marker-to-motor relationship may require calibration. A future improvement is to map one full marker rotation to the full safe joint limit of the corresponding motor/tool axis.
 
-11. Recommended Startup Procedure
+## 11. Recommended Startup Procedure
 
 A new lab should use the following startup order.
 
@@ -376,7 +378,9 @@ ros2 run hand_for_humanoid_robot keyboard_control_node
 For RViz control:
 
 ros2 run hand_for_humanoid_robot rviz_control_node
-12. Common ROS2 Commands
+
+## 12. Common ROS2 Commands
+
 Build Package
 cd ~/robotis_ws
 colcon build --packages-select hand_for_humanoid_robot
@@ -397,7 +401,7 @@ Ctrl + C
 
 in the terminal running the node.
 
-13. Troubleshooting
+## 13. Troubleshooting
 Problem: ROS2 Cannot Find the Package
 
 Run:
@@ -453,7 +457,8 @@ The OpenRB-150 is connected.
 The marker topic is active.
 The motor command function is being called.
 The device path and motor IDs are correct.
-14. Development Notes
+
+## 14. Development Notes
 
 Known future improvements:
 
@@ -465,7 +470,8 @@ Integrate Oculus or VR controller input.
 Add RFID-based tool identification.
 Add safer launch files and parameter files.
 Add calibration documentation for each motor/tool axis.
-15. Updating GitHub
+
+## 15. Updating GitHub
 
 After modifying code or documentation:
 
@@ -478,7 +484,8 @@ git push
 If there are no changes, Git will say:
 
 nothing to commit, working tree clean
-16. Important Files Not Included in GitHub
+
+## 16. Important Files Not Included in GitHub
 
 The following folders should not be uploaded because they are generated by ROS2:
 

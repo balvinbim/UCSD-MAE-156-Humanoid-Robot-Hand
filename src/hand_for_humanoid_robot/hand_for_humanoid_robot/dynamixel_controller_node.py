@@ -33,7 +33,7 @@ class DynamixelControllerNode(Node):
         self.declare_parameter('home_positions', [2048, 0, 3072, 2048])
 
         # Actual operation speed.
-        self.declare_parameter('command_speed_deg_per_sec', 20.0)
+        self.declare_parameter('command_speed_deg_per_sec', 50.0)
 
         # Dynamixel internal profile velocity.
         self.declare_parameter('profile_velocity', 80)

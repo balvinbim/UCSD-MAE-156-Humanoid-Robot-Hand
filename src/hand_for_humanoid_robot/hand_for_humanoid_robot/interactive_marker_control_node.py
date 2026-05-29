@@ -18,9 +18,31 @@ class InteractiveMarkerControlNode(Node):
     def __init__(self):
         super().__init__('interactive_marker_control_node')
 
+        # ------------------------------------------------------------
+        # command_source options:
+        #
+        # manual = only RViz roll/pitch/yaw/grip marker controls command joints
+        # ik     = only /target_tool_joints controls command joints
+        # both   = both RViz marker and IK can update command joints
+        #
+        # Default is manual for safety.
+        # For IK testing, run with:
+        # ros2 run hand_for_humanoid_robot interactive_marker_control_node --ros-args -p command_source:=ik
+        # ------------------------------------------------------------
+        self.declare_parameter('command_source', 'manual')
+        self.command_source = str(self.get_parameter('command_source').value)
+
         self.command_pub = self.create_publisher(
             JointState,
             '/h4hr/joint_command',
+            10
+        )
+
+        # This lets the IK node feed this control node.
+        self.ik_sub = self.create_subscription(
+            JointState,
+            '/target_tool_joints',
+            self.ik_joint_callback,
             10
         )
 
@@ -34,6 +56,14 @@ class InteractiveMarkerControlNode(Node):
         self.pitch_deg = 0.0
         self.yaw_deg = 0.0
         self.grip_deg = 0.0
+
+        self.previous_axis_angle_deg = {
+            'roll_blue_z': None,
+            'pitch_green_y': None,
+            'yaw_red_x': None,
+        }
+
+        self.previous_grip_position = None
 
         # Joystick sensitivity
         # Lower these if movement is too aggressive.
@@ -64,16 +94,95 @@ class InteractiveMarkerControlNode(Node):
         )
 
         self.get_logger().info('Relative joystick interactive marker started.')
+        self.get_logger().info(f'command_source = {self.command_source}')
+        self.get_logger().info('Publishing joint commands to /h4hr/joint_command')
+        self.get_logger().info('Listening for IK commands on /target_tool_joints')
         self.get_logger().info('Controls:')
         self.get_logger().info('  Blue/Z ring   -> roll only')
         self.get_logger().info('  Green/Y ring  -> pitch only')
         self.get_logger().info('  Red/X ring    -> yaw only')
         self.get_logger().info('  Up arrow      -> open gripper')
         self.get_logger().info('  Down arrow    -> close gripper')
-        self.get_logger().info('Marker resets to neutral after each input.')
 
     def clamp(self, value, lower, upper):
         return max(lower, min(upper, value))
+
+    def ik_joint_callback(self, msg):
+        if self.command_source not in ['ik', 'both']:
+            return
+
+        if len(msg.position) < 4:
+            self.get_logger().warn(
+                'Received /target_tool_joints with fewer than 4 positions.'
+            )
+            return
+
+        # tip_ik_node publishes JointState positions in radians.
+        roll_deg = math.degrees(msg.position[0])
+        pitch_deg = math.degrees(msg.position[1])
+        yaw_deg = math.degrees(msg.position[2])
+        grip_deg = math.degrees(msg.position[3])
+
+        self.roll_deg = self.clamp(
+            roll_deg,
+            -self.max_roll_deg,
+            self.max_roll_deg
+        )
+
+        self.pitch_deg = self.clamp(
+            pitch_deg,
+            -self.max_pitch_deg,
+            self.max_pitch_deg
+        )
+
+        self.yaw_deg = self.clamp(
+            yaw_deg,
+            -self.max_yaw_deg,
+            self.max_yaw_deg
+        )
+
+        self.grip_deg = self.clamp(
+            grip_deg,
+            self.grip_min_deg,
+            self.grip_max_deg
+        )
+
+        self.get_logger().info(
+            f'IK command accepted deg: '
+            f'R={self.roll_deg:.1f}, '
+            f'P={self.pitch_deg:.1f}, '
+            f'Y={self.yaw_deg:.1f}, '
+            f'G={self.grip_deg:.1f}'
+        )
+
+    def get_incremental_axis_delta(self, control_name, raw_angle_deg):
+        previous = self.previous_axis_angle_deg.get(control_name)
+
+        if previous is None:
+            self.previous_axis_angle_deg[control_name] = raw_angle_deg
+            return 0.0
+
+        delta = raw_angle_deg - previous
+
+        if delta > 180.0:
+            delta -= 360.0
+
+        if delta < -180.0:
+            delta += 360.0
+
+        self.previous_axis_angle_deg[control_name] = raw_angle_deg
+
+        return delta
+
+    def get_incremental_grip_delta(self, current_position):
+        if self.previous_grip_position is None:
+            self.previous_grip_position = current_position
+            return 0.0
+
+        delta = current_position - self.previous_grip_position
+        self.previous_grip_position = current_position
+
+        return delta
 
     def make_marker(self):
         marker = InteractiveMarker()
@@ -194,7 +303,7 @@ class InteractiveMarkerControlNode(Node):
         yaw = math.atan2(siny_cosp, cosy_cosp)
 
         return roll, pitch, yaw
-    
+
     def signed_axis_angle_deg(self, q, axis):
         x = q.x
         y = q.y
@@ -227,6 +336,18 @@ class InteractiveMarkerControlNode(Node):
         return math.degrees(signed_angle_rad)
 
     def process_feedback(self, feedback):
+        if self.command_source not in ['manual', 'both']:
+            return
+
+        if feedback.event_type == InteractiveMarkerFeedback.MOUSE_UP:
+            if feedback.control_name in self.previous_axis_angle_deg:
+                self.previous_axis_angle_deg[feedback.control_name] = None
+
+            if feedback.control_name == 'grip_up_down_y' or feedback.control_name == 'grip_up_down_z':
+                self.previous_grip_position = None
+
+            return
+
         if self.ignore_next_feedback:
             self.ignore_next_feedback = False
             return
@@ -237,7 +358,9 @@ class InteractiveMarkerControlNode(Node):
         q = feedback.pose.orientation
 
         if control_name == 'roll_blue_z':
-            delta_deg = self.signed_axis_angle_deg(q, 'z') * self.rotation_gain
+            raw_angle = self.signed_axis_angle_deg(q, 'z')
+            delta_deg = self.get_incremental_axis_delta(control_name, raw_angle)
+            delta_deg *= self.rotation_gain
 
             if abs(delta_deg) >= self.rotation_deadband_deg:
                 self.roll_deg = self.clamp(
@@ -248,7 +371,9 @@ class InteractiveMarkerControlNode(Node):
                 did_update = True
 
         elif control_name == 'pitch_green_y':
-            delta_deg = self.signed_axis_angle_deg(q, 'y') * self.rotation_gain
+            raw_angle = self.signed_axis_angle_deg(q, 'y')
+            delta_deg = self.get_incremental_axis_delta(control_name, raw_angle)
+            delta_deg *= self.rotation_gain
 
             if abs(delta_deg) >= self.rotation_deadband_deg:
                 self.pitch_deg = self.clamp(
@@ -259,7 +384,9 @@ class InteractiveMarkerControlNode(Node):
                 did_update = True
 
         elif control_name == 'yaw_red_x':
-            delta_deg = self.signed_axis_angle_deg(q, 'x') * self.rotation_gain
+            raw_angle = self.signed_axis_angle_deg(q, 'x')
+            delta_deg = self.get_incremental_axis_delta(control_name, raw_angle)
+            delta_deg *= self.rotation_gain
 
             if abs(delta_deg) >= self.rotation_deadband_deg:
                 self.yaw_deg = self.clamp(
@@ -271,9 +398,10 @@ class InteractiveMarkerControlNode(Node):
 
         elif control_name == 'grip_up_down_y':
             y_motion = feedback.pose.position.y
+            delta_position = self.get_incremental_grip_delta(y_motion)
 
-            if abs(y_motion) >= self.grip_deadband_m:
-                delta_grip = y_motion * self.grip_gain_deg_per_meter
+            if abs(delta_position) >= self.grip_deadband_m:
+                delta_grip = delta_position * self.grip_gain_deg_per_meter
                 self.grip_deg = self.clamp(
                     self.grip_deg + delta_grip,
                     self.grip_min_deg,

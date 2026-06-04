@@ -28,34 +28,24 @@ class AutoZeroNode(Node):
         )
         self.declare_parameter('baudrate', 57600)
 
-        # Motor IDs correspond to Disk 1, Disk 2, Disk 3, Disk 4.
         self.declare_parameter('motor_ids', [1, 2, 3, 4])
+        self.declare_parameter('home_positions', [0, 3072, 2048, 2048])
 
-        # Home positions for Disk 1, Disk 2, Disk 3, Disk 4.
-        self.declare_parameter('home_positions', [2048, 0, 3072, 2048])
-
-        # Motion speeds.
         self.declare_parameter('home_speed_deg_per_sec', 20.0)
         self.declare_parameter('sweep_speed_deg_per_sec', 20.0)
+        self.declare_parameter('return_home_speed_deg_per_sec', 20.0)
 
-        # Dynamixel internal profile velocity.
         self.declare_parameter('profile_velocity', 80)
+        self.declare_parameter('motion_loop_sleep', 0.02)
 
-        # Loop timing.
-        self.declare_parameter('motion_loop_sleep', 0.01)
-
-        # Arrival behavior.
         self.declare_parameter('arrival_tolerance_counts', 20)
-        self.declare_parameter('arrival_timeout_sec', 45.0)
+        self.declare_parameter('arrival_timeout_sec', 10.0)
 
-        # Launch integration.
         self.declare_parameter('exit_after_sequence', True)
 
-        # If true, torque is disabled when auto-zero exits.
-        # This is safe because the controller will reconnect afterward.
+        # True is safest for launch sequencing because the controller reconnects after auto-zero.
         self.declare_parameter('torque_off_on_shutdown', True)
 
-        # Sweep sizes.
         self.declare_parameter('roll_sweep_deg', 259.0)
         self.declare_parameter('pitch_sweep_deg', 79.0)
         self.declare_parameter('yaw_sweep_deg', 79.0)
@@ -68,6 +58,8 @@ class AutoZeroNode(Node):
 
         self.home_speed_deg_per_sec = float(self.get_parameter('home_speed_deg_per_sec').value)
         self.sweep_speed_deg_per_sec = float(self.get_parameter('sweep_speed_deg_per_sec').value)
+        self.return_home_speed_deg_per_sec = float(self.get_parameter('return_home_speed_deg_per_sec').value)
+
         self.profile_velocity = int(self.get_parameter('profile_velocity').value)
         self.motion_loop_sleep = float(self.get_parameter('motion_loop_sleep').value)
         self.arrival_tolerance_counts = int(self.get_parameter('arrival_tolerance_counts').value)
@@ -87,6 +79,7 @@ class AutoZeroNode(Node):
         self.protocol_version = 2.0
 
         self.ADDR_OPERATING_MODE = 11
+        self.ADDR_HARDWARE_ERROR_STATUS = 70
         self.ADDR_TORQUE_ENABLE = 64
         self.ADDR_PROFILE_VELOCITY = 112
         self.ADDR_GOAL_POSITION = 116
@@ -96,19 +89,11 @@ class AutoZeroNode(Node):
         self.TORQUE_ENABLE = 1
         self.EXTENDED_POSITION_CONTROL_MODE = 4
 
-        # 4096 counts = 360 degrees.
         self.COUNTS_PER_DEGREE = 4096.0 / 360.0
 
         # -----------------------------
         # dVRK coupling matrix
         # -----------------------------
-        # Joint = CouplingMatrix * Disk
-        #
-        # Roll  = -1.56323325  * Disk1
-        # Pitch =  1.01857984  * Disk2
-        # Yaw   = -0.830634273 * Disk2 + 0.608862987 * Disk3 + 0.608862987 * Disk4
-        # Grip  = -1.21772597  * Disk3 + 1.21772597  * Disk4
-
         self.ROLL_D1 = -1.56323325
         self.PITCH_D2 = 1.01857984
         self.YAW_D2 = -0.830634273
@@ -124,7 +109,6 @@ class AutoZeroNode(Node):
             'grip': (0.0, 30.0),
         }
 
-        # Disk safety limits relative to home.
         self.disk_angle_limits_deg = {
             1: (-166.0, 166.0),
             2: (-78.5, 78.5),
@@ -151,9 +135,12 @@ class AutoZeroNode(Node):
 
         self.no_tool_confirmed = False
         self.tool_inserted_confirmed = False
-        self.skip_sweep_requested = False
         self.sequence_started = False
         self.auto_zero_complete = False
+        self.emergency_stop_requested = False
+
+        self.loop_counter = 0
+        self.loop_rate_timer = time.time()
 
         self.dxl_lock = threading.Lock()
 
@@ -177,10 +164,10 @@ class AutoZeroNode(Node):
             10
         )
 
-        self.skip_sweep_sub = self.create_subscription(
+        self.emergency_stop_sub = self.create_subscription(
             Bool,
-            '/h4hr/skip_sweep',
-            self.skip_sweep_callback,
+            '/h4hr/emergency_stop',
+            self.emergency_stop_callback,
             10
         )
 
@@ -223,10 +210,11 @@ class AutoZeroNode(Node):
             self.tool_inserted_confirmed = True
             self.publish_status('Tool insertion confirmation received from ROS topic.')
 
-    def skip_sweep_callback(self, msg):
+    def emergency_stop_callback(self, msg):
         if msg.data:
-            self.skip_sweep_requested = True
-            self.publish_status('Skip sweep requested from ROS topic.')
+            self.emergency_stop_requested = True
+            self.publish_status('EMERGENCY STOP received from ROS topic.')
+            self.emergency_torque_off()
 
     def publish_status(self, text):
         msg = String()
@@ -278,6 +266,7 @@ class AutoZeroNode(Node):
 
         for dxl_id in self.motor_ids:
             self.ping_motor(dxl_id)
+            self.read_hardware_error_status(dxl_id)
             self.goal_positions[dxl_id] = self.get_home_position(dxl_id)
 
         self.set_all_extended_position_mode()
@@ -336,6 +325,19 @@ class AutoZeroNode(Node):
 
         return self.check_result(comm_result, dxl_error, action)
 
+    def read_1_byte(self, dxl_id, address, action):
+        with self.dxl_lock:
+            value, comm_result, dxl_error = self.packet_handler.read1ByteTxRx(
+                self.port_handler,
+                dxl_id,
+                address
+            )
+
+        if self.check_result(comm_result, dxl_error, action):
+            return value
+
+        return None
+
     def read_4_byte(self, dxl_id, address, action):
         with self.dxl_lock:
             value, comm_result, dxl_error = self.packet_handler.read4ByteTxRx(
@@ -348,6 +350,26 @@ class AutoZeroNode(Node):
             return value
 
         return None
+
+    def read_hardware_error_status(self, dxl_id):
+        value = self.read_1_byte(
+            dxl_id,
+            self.ADDR_HARDWARE_ERROR_STATUS,
+            f'Read hardware error status motor {dxl_id}'
+        )
+
+        if value is None:
+            return None
+
+        if value != 0:
+            self.get_logger().error(
+                f'Motor {dxl_id} Hardware Error Status = {value}. '
+                'Power-cycle motor supply/OpenRB if this persists.'
+            )
+        else:
+            self.get_logger().info(f'Motor {dxl_id} Hardware Error Status = 0.')
+
+        return value
 
     # -----------------------------
     # Signed / unsigned conversion
@@ -411,6 +433,12 @@ class AutoZeroNode(Node):
 
     def command_position(self, dxl_id, position, enforce_bounds=True, log=True):
         position = int(position)
+
+        if self.emergency_stop_requested:
+            self.get_logger().error(
+                f'Motor {dxl_id} command refused because emergency stop is active.'
+            )
+            return False
 
         if enforce_bounds and not self.is_position_inside_bounds(dxl_id, position):
             min_position, max_position = self.motor_position_limits[dxl_id]
@@ -577,13 +605,9 @@ class AutoZeroNode(Node):
         line = sys.stdin.readline().strip().lower()
 
         if line == '1':
+            self.emergency_stop_requested = True
             self.emergency_torque_off()
             self.publish_status('Emergency torque off requested from keyboard.')
-            return False
-
-        if line == 'z':
-            self.skip_sweep_requested = True
-            self.publish_status('Troubleshooting skip received: z. Skipping remaining sweep.')
             return False
 
         return True
@@ -591,6 +615,18 @@ class AutoZeroNode(Node):
     # -----------------------------
     # Motion engine
     # -----------------------------
+    def log_loop_rate_if_needed(self):
+        self.loop_counter += 1
+        now = time.time()
+
+        elapsed = now - self.loop_rate_timer
+
+        if elapsed >= 2.0:
+            rate = self.loop_counter / elapsed
+            self.get_logger().info(f'Auto-zero motion loop rate: {rate:.1f} Hz')
+            self.loop_counter = 0
+            self.loop_rate_timer = now
+
     def run_independent_motor_sequences(self, sequences, speed_deg_per_sec, enforce_bounds=True):
         states = {}
         speed_deg_per_sec = abs(float(speed_deg_per_sec))
@@ -645,8 +681,8 @@ class AutoZeroNode(Node):
 
             if not enforce_bounds:
                 self.get_logger().warn(
-                    f'Motor {dxl_id} home move is running with disk bounds disabled. '
-                    f'This is only safe because no tool should be inserted.'
+                    f'Motor {dxl_id} move is running with disk bounds disabled. '
+                    f'This should only be used for out-of-bounds recovery with NO TOOL inserted.'
                 )
 
             self.goal_positions[dxl_id] = present
@@ -663,14 +699,20 @@ class AutoZeroNode(Node):
             self.get_logger().error('No valid motor sequences to run.')
             return False
 
+        self.loop_counter = 0
+        self.loop_rate_timer = time.time()
+
         while rclpy.ok():
             rclpy.spin_once(self, timeout_sec=0.0)
 
-            if self.skip_sweep_requested:
+            if self.emergency_stop_requested:
+                self.get_logger().error('Motion stopped because emergency stop is active.')
                 return False
 
             if not self.check_keyboard_runtime_commands():
                 return False
+
+            self.log_loop_rate_if_needed()
 
             all_done = True
             now = time.time()
@@ -802,13 +844,16 @@ class AutoZeroNode(Node):
 
         print()
         print(prompt_text)
-        print('Type one of these and press Enter:')
+        print('Use the Hand for Humanoid Robot UI node, or type one of these and press Enter:')
         print(f'  {accepted_words}')
         print('Type 1 and press Enter for emergency torque off.')
         print()
 
         while rclpy.ok():
             rclpy.spin_once(self, timeout_sec=0.05)
+
+            if self.emergency_stop_requested:
+                return False
 
             if getattr(self, topic_flag_name):
                 return True
@@ -819,6 +864,7 @@ class AutoZeroNode(Node):
                 line = sys.stdin.readline().strip().lower()
 
                 if line == '1':
+                    self.emergency_stop_requested = True
                     self.emergency_torque_off()
                     self.publish_status('Emergency torque off requested from keyboard.')
                     return False
@@ -849,8 +895,9 @@ class AutoZeroNode(Node):
 
     def move_all_motors_home_no_tool(self):
         self.publish_status(
-            'STEP 1: Moving all motors to home positions with NO TOOL inserted. '
-            'Disk bounds are disabled for this home move only.'
+            'STEP 1: Moving all motors to home positions. '
+            'Motors already inside bounds will remain bound-enforced. '
+            'Only motors currently outside bounds will use recovery homing.'
         )
 
         motor_positions = {}
@@ -858,24 +905,80 @@ class AutoZeroNode(Node):
         for dxl_id in self.motor_ids:
             motor_positions[dxl_id] = self.get_home_position(dxl_id)
 
-        ok = self.move_to_motor_positions(
-            motor_positions,
-            self.home_speed_deg_per_sec,
-            enforce_bounds=False
-        )
+        motors_in_bounds = {}
 
-        if ok:
-            self.current_joint_targets_deg = {
-                'roll': 0.0,
-                'pitch': 0.0,
-                'yaw': 0.0,
-                'grip': 0.0,
+        for dxl_id in self.motor_ids:
+            present = self.read_present_position(dxl_id)
+
+            if present is None:
+                motors_in_bounds[dxl_id] = False
+                self.get_logger().error(
+                    f'Motor {dxl_id}: cannot read present position. '
+                    'Treating as out of bounds recovery candidate.'
+                )
+                continue
+
+            motors_in_bounds[dxl_id] = self.is_position_inside_bounds(dxl_id, present)
+
+            if motors_in_bounds[dxl_id]:
+                self.get_logger().info(
+                    f'Motor {dxl_id} is inside bounds at {present}. '
+                    'Homing with bounds enforced.'
+                )
+            else:
+                self.get_logger().warn(
+                    f'Motor {dxl_id} is outside safe bounds at {present}. '
+                    'Bounds will be disabled for this motor during homing only.'
+                )
+
+        in_bounds_ids = [dxl_id for dxl_id, inside in motors_in_bounds.items() if inside]
+        out_of_bounds_ids = [dxl_id for dxl_id, inside in motors_in_bounds.items() if not inside]
+
+        if in_bounds_ids:
+            in_bounds_positions = {
+                dxl_id: motor_positions[dxl_id]
+                for dxl_id in in_bounds_ids
             }
-            self.publish_status('All motors reached home position.')
-        else:
-            self.publish_status('Failed to move all motors home.')
 
-        return ok
+            ok = self.move_to_motor_positions(
+                in_bounds_positions,
+                self.home_speed_deg_per_sec,
+                enforce_bounds=True
+            )
+
+            if not ok:
+                self.publish_status('Failed to home in-bounds motors with bounds enforced.')
+                return False
+
+        if out_of_bounds_ids:
+            self.publish_status(
+                'Recovering out-of-bounds motors. This should only happen with NO TOOL inserted.'
+            )
+
+            out_of_bounds_positions = {
+                dxl_id: motor_positions[dxl_id]
+                for dxl_id in out_of_bounds_ids
+            }
+
+            ok = self.move_to_motor_positions(
+                out_of_bounds_positions,
+                self.home_speed_deg_per_sec,
+                enforce_bounds=False
+            )
+
+            if not ok:
+                self.publish_status('Failed to recover out-of-bounds motors.')
+                return False
+
+        self.current_joint_targets_deg = {
+            'roll': 0.0,
+            'pitch': 0.0,
+            'yaw': 0.0,
+            'grip': 0.0,
+        }
+
+        self.publish_status('All motors reached home position.')
+        return True
 
     def confirm_tool_inserted(self):
         return self.wait_for_line_or_topic(
@@ -886,7 +989,6 @@ class AutoZeroNode(Node):
 
     def sweep_all_joints_with_coupling_matrix(self):
         self.publish_status('STEP 3: Starting coupling-matrix joint sweep.')
-        self.publish_status('Troubleshooting: type z then Enter, or publish /h4hr/skip_sweep, to skip the remaining sweep.')
 
         zero = {
             'roll': 0.0,
@@ -915,9 +1017,9 @@ class AutoZeroNode(Node):
         ]
 
         for index, target in enumerate(sweep_targets):
-            if self.skip_sweep_requested:
-                self.publish_status('Sweep skipped. Continuing to control startup.')
-                return True
+            if self.emergency_stop_requested:
+                self.publish_status('Sweep stopped by emergency stop.')
+                return False
 
             self.publish_status(
                 f'Sweep waypoint {index + 1}/{len(sweep_targets)}: '
@@ -933,17 +1035,44 @@ class AutoZeroNode(Node):
             )
 
             if not ok:
-                if self.skip_sweep_requested:
-                    self.publish_status('Sweep skipped by user. Continuing to control startup.')
-                    return True
+                self.publish_status(
+                    'Sweep stopped because a waypoint failed. '
+                    'Attempting safe return to zero.'
+                )
 
-                self.publish_status('Sweep stopped because a waypoint failed.')
+                self.try_return_to_zero_after_failure()
                 return False
 
             time.sleep(0.25)
 
         self.publish_status('Coupling-matrix joint sweep complete.')
         return True
+
+    def try_return_to_zero_after_failure(self):
+        if self.emergency_stop_requested:
+            self.publish_status('Return to zero skipped because emergency stop is active.')
+            return False
+
+        zero = {
+            'roll': 0.0,
+            'pitch': 0.0,
+            'yaw': 0.0,
+            'grip': 0.0,
+        }
+
+        self.publish_status('Attempting return to zero after sweep failure.')
+
+        ok = self.move_to_joint_targets(
+            zero,
+            self.return_home_speed_deg_per_sec
+        )
+
+        if ok:
+            self.publish_status('Returned to zero after failure.')
+        else:
+            self.publish_status('Could not return to zero after failure.')
+
+        return ok
 
     def run_auto_zero_sequence(self):
         if self.sequence_started:
@@ -975,11 +1104,7 @@ class AutoZeroNode(Node):
         ok = self.sweep_all_joints_with_coupling_matrix()
 
         if ok:
-            if self.skip_sweep_requested:
-                self.publish_status('Auto-zero sequence complete with sweep skipped.')
-            else:
-                self.publish_status('Auto-zero sequence complete.')
-
+            self.publish_status('Auto-zero sequence complete.')
             self.publish_ready()
             return True
 
@@ -1018,16 +1143,17 @@ class AutoZeroNode(Node):
         print('---------------------------------------------')
         print('Sequence:')
         print('  0. Confirm NO TOOL is inserted.')
-        print('  1. Motors move directly to home positions.')
+        print('  1. Motors move to home positions.')
         print('  2. Insert tool.')
         print('  3. Confirm tool insertion.')
         print('  4. Node performs joint-space sweep using coupling matrix.')
         print('  5. After completion, RViz control can start.')
         print()
+        print('Recommended: use the Hand for Humanoid Robot UI node from another terminal.')
+        print()
         print('Keyboard confirmations require Enter:')
         print('  No tool inserted: type n then press Enter')
         print('  Tool inserted:    type y then press Enter')
-        print('  Skip sweep:       type z then press Enter')
         print('  Emergency:        type 1 then press Enter')
         print()
         print('ROS topic confirmations:')
@@ -1037,8 +1163,8 @@ class AutoZeroNode(Node):
         print('  Confirm TOOL INSERTED:')
         print('    ros2 topic pub --once /h4hr/confirm_tool_insertion std_msgs/msg/Bool "{data: true}"')
         print()
-        print('  Skip sweep:')
-        print('    ros2 topic pub --once /h4hr/skip_sweep std_msgs/msg/Bool "{data: true}"')
+        print('  Emergency stop:')
+        print('    ros2 topic pub --once /h4hr/emergency_stop std_msgs/msg/Bool "{data: true}"')
         print()
         print('Motor/Disk mapping:')
         print('  Motor 1 = Disk 1')
@@ -1073,10 +1199,14 @@ def main(args=None):
 
         if node.exit_after_sequence:
             if success:
-                node.get_logger().info('Auto-zero finished successfully. Exiting so launch can start control nodes.')
+                node.get_logger().info(
+                    'Auto-zero finished successfully. Exiting so launch can start control nodes.'
+                )
                 return
 
-            node.get_logger().error('Auto-zero did not complete successfully. Staying alive so launch will NOT continue.')
+            node.get_logger().error(
+                'Auto-zero did not complete successfully. Staying alive so launch will NOT continue.'
+            )
             while rclpy.ok():
                 rclpy.spin_once(node, timeout_sec=0.1)
 

@@ -20,7 +20,7 @@ class RvizTipMarkerNode(Node):
         self.declare_parameter('initial_x', 0.20)
         self.declare_parameter('initial_y', 0.00)
         self.declare_parameter('initial_z', 0.00)
-        self.declare_parameter('marker_scale', 0.20)
+        self.declare_parameter('marker_scale', 0.30)
         self.declare_parameter('publish_rate_hz', 20.0)
 
         self.frame_id = str(self.get_parameter('frame_id').value)
@@ -55,22 +55,21 @@ class RvizTipMarkerNode(Node):
 
         self.make_marker()
 
-        timer_period = 1.0 / self.publish_rate_hz
         self.timer = self.create_timer(
-            timer_period,
+            1.0 / self.publish_rate_hz,
             self.publish_desired_tip_pose
         )
 
         self.get_logger().info('rviz_tip_marker_node started.')
         self.get_logger().info(f'Publishing /desired_tip_pose in frame: {self.frame_id}')
-        self.get_logger().info('Move the sphere in RViz to command desired tip position.')
-        self.get_logger().info('Use the red roll ring if you want to command roll orientation.')
+        self.get_logger().info('Open RViz manually, set Fixed Frame to world, and add InteractiveMarkers.')
+        self.get_logger().info('Update Topic should be /desired_tip_marker_server/update')
 
     def make_marker(self):
         marker = InteractiveMarker()
         marker.header.frame_id = self.frame_id
         marker.name = self.marker_name
-        marker.description = 'Desired dVRK Tip Pose'
+        marker.description = 'Desired dVRK Tip Position'
         marker.scale = self.marker_scale
 
         marker.pose.position.x = self.initial_x
@@ -81,69 +80,64 @@ class RvizTipMarkerNode(Node):
         marker.pose.orientation.z = 0.0
         marker.pose.orientation.w = 1.0
 
+        # Visible green sphere.
         sphere = Marker()
         sphere.type = Marker.SPHERE
-        sphere.scale.x = 0.035
-        sphere.scale.y = 0.035
-        sphere.scale.z = 0.035
+        sphere.scale.x = 0.06
+        sphere.scale.y = 0.06
+        sphere.scale.z = 0.06
         sphere.color.r = 0.0
         sphere.color.g = 1.0
         sphere.color.b = 0.2
         sphere.color.a = 1.0
 
         visual_control = InteractiveMarkerControl()
+        visual_control.name = 'green_sphere_visual'
         visual_control.always_visible = True
         visual_control.markers.append(sphere)
         marker.controls.append(visual_control)
 
+        # Main free 3D movement control.
+        # This is the control style we used when RViz was opened manually.
+        move_3d = InteractiveMarkerControl()
+        move_3d.name = 'move_3d'
+        move_3d.interaction_mode = InteractiveMarkerControl.MOVE_3D
+        move_3d.orientation_mode = InteractiveMarkerControl.INHERIT
+        move_3d.always_visible = False
+        marker.controls.append(move_3d)
+
+        # X-axis movement.
         move_x = InteractiveMarkerControl()
         move_x.name = 'move_x'
         move_x.interaction_mode = InteractiveMarkerControl.MOVE_AXIS
-        move_x.orientation_mode = InteractiveMarkerControl.FIXED
+        move_x.orientation_mode = InteractiveMarkerControl.INHERIT
         move_x.orientation.w = 1.0
         move_x.orientation.x = 1.0
         move_x.orientation.y = 0.0
         move_x.orientation.z = 0.0
         marker.controls.append(move_x)
 
+        # Y-axis movement.
         move_y = InteractiveMarkerControl()
         move_y.name = 'move_y'
         move_y.interaction_mode = InteractiveMarkerControl.MOVE_AXIS
-        move_y.orientation_mode = InteractiveMarkerControl.FIXED
+        move_y.orientation_mode = InteractiveMarkerControl.INHERIT
         move_y.orientation.w = 1.0
         move_y.orientation.x = 0.0
         move_y.orientation.y = 1.0
         move_y.orientation.z = 0.0
         marker.controls.append(move_y)
 
+        # Z-axis movement.
         move_z = InteractiveMarkerControl()
         move_z.name = 'move_z'
         move_z.interaction_mode = InteractiveMarkerControl.MOVE_AXIS
-        move_z.orientation_mode = InteractiveMarkerControl.FIXED
+        move_z.orientation_mode = InteractiveMarkerControl.INHERIT
         move_z.orientation.w = 1.0
         move_z.orientation.x = 0.0
         move_z.orientation.y = 0.0
         move_z.orientation.z = 1.0
         marker.controls.append(move_z)
-
-        move_3d = InteractiveMarkerControl()
-        move_3d.name = 'move_3d'
-        move_3d.interaction_mode = InteractiveMarkerControl.MOVE_3D
-        move_3d.orientation_mode = InteractiveMarkerControl.FIXED
-        move_3d.always_visible = False
-        marker.controls.append(move_3d)
-
-        # Optional roll command ring.
-        # This lets the marker orientation carry a roll command.
-        roll_control = InteractiveMarkerControl()
-        roll_control.name = 'roll_about_x'
-        roll_control.interaction_mode = InteractiveMarkerControl.ROTATE_AXIS
-        roll_control.orientation_mode = InteractiveMarkerControl.FIXED
-        roll_control.orientation.w = 1.0
-        roll_control.orientation.x = 1.0
-        roll_control.orientation.y = 0.0
-        roll_control.orientation.z = 0.0
-        marker.controls.append(roll_control)
 
         self.server.insert(marker, feedback_callback=self.process_feedback)
         self.server.applyChanges()

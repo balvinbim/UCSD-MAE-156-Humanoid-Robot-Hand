@@ -37,6 +37,7 @@ setup(
     entry_points={
         'console_scripts': [
             'auto_zero_node = hand_for_humanoid_robot.auto_zero_node:main',
+            'rfid_detection_node = hand_for_humanoid_robot.rfid_detection_node:main',
             'dynamixel_controller_node = hand_for_humanoid_robot.dynamixel_controller_node:main',
             'interactive_marker_control_node = hand_for_humanoid_robot.interactive_marker_control_node:main',
             'keyboard_control_node = hand_for_humanoid_robot.keyboard_control_node:main',
@@ -45,6 +46,9 @@ setup(
             'tip_ik_node = hand_for_humanoid_robot.tip_ik_node:main',
             'rviz_tip_marker_node = hand_for_humanoid_robot.rviz_tip_marker_node:main',
             'joint_command_bridge_node = hand_for_humanoid_robot.joint_command_bridge_node:main',
+            'tool_keyboard_control_node = hand_for_humanoid_robot.tool_keyboard_control_node:main',
+            'hand_for_humanoid_robot_ui_node = hand_for_humanoid_robot.hand_for_humanoid_robot_ui_node:main',
+            'rviz_orientation_control_node = hand_for_humanoid_robot.rviz_orientation_control_node:main',
         ],
     },
 )

@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 
 import math
+import time
 
 import rclpy
 from rclpy.node import Node
@@ -13,23 +14,21 @@ class TipIKNode(Node):
     def __init__(self):
         super().__init__('tip_ik_node')
 
-        # Tool base location in the RViz/ROS frame.
         self.declare_parameter('base_x', 0.0)
         self.declare_parameter('base_y', 0.0)
         self.declare_parameter('base_z', 0.0)
 
-        # Safety limits.
-        self.declare_parameter('max_roll_deg', 45.0)
-        self.declare_parameter('max_pitch_deg', 45.0)
-        self.declare_parameter('max_yaw_deg', 45.0)
-        self.declare_parameter('grip_deg', 0.0)
+        self.declare_parameter('max_roll_deg', 259.0)
+        self.declare_parameter('max_pitch_deg', 79.0)
+        self.declare_parameter('max_yaw_deg', 79.0)
+        self.declare_parameter('max_grip_deg', 30.0)
 
-        # If True, use roll from /desired_tip_pose orientation.
-        # If False, use fixed_roll_deg.
-        self.declare_parameter('use_pose_roll', True)
+        self.declare_parameter('use_keyboard_commands', True)
+        self.declare_parameter('keyboard_timeout_sec', 1.0)
+
         self.declare_parameter('fixed_roll_deg', 0.0)
+        self.declare_parameter('fixed_grip_deg', 0.0)
 
-        # Deadzone prevents weird behavior if target is too close to base.
         self.declare_parameter('deadzone_m', 0.005)
 
         self.base_x = float(self.get_parameter('base_x').value)
@@ -39,16 +38,31 @@ class TipIKNode(Node):
         self.max_roll_deg = float(self.get_parameter('max_roll_deg').value)
         self.max_pitch_deg = float(self.get_parameter('max_pitch_deg').value)
         self.max_yaw_deg = float(self.get_parameter('max_yaw_deg').value)
+        self.max_grip_deg = float(self.get_parameter('max_grip_deg').value)
 
-        self.grip_deg = float(self.get_parameter('grip_deg').value)
-        self.use_pose_roll = bool(self.get_parameter('use_pose_roll').value)
+        self.use_keyboard_commands = bool(self.get_parameter('use_keyboard_commands').value)
+        self.keyboard_timeout_sec = float(self.get_parameter('keyboard_timeout_sec').value)
+
         self.fixed_roll_deg = float(self.get_parameter('fixed_roll_deg').value)
+        self.fixed_grip_deg = float(self.get_parameter('fixed_grip_deg').value)
+
         self.deadzone_m = float(self.get_parameter('deadzone_m').value)
 
-        self.sub = self.create_subscription(
+        self.keyboard_roll_deg = 0.0
+        self.keyboard_grip_deg = 0.0
+        self.last_keyboard_msg_time = 0.0
+
+        self.tip_sub = self.create_subscription(
             PoseStamped,
             '/desired_tip_pose',
             self.tip_callback,
+            10
+        )
+
+        self.keyboard_sub = self.create_subscription(
+            JointState,
+            '/h4hr/keyboard_tool_command',
+            self.keyboard_callback,
             10
         )
 
@@ -59,25 +73,52 @@ class TipIKNode(Node):
         )
 
         self.get_logger().info('tip_ik_node started.')
-        self.get_logger().info('Listening to /desired_tip_pose')
-        self.get_logger().info('Publishing to /target_tool_joints')
-        self.get_logger().info(f'use_pose_roll = {self.use_pose_roll}')
-        self.get_logger().info(f'fixed_roll_deg = {self.fixed_roll_deg:.1f}')
+        self.get_logger().info('RViz /desired_tip_pose controls pitch/yaw.')
+        self.get_logger().info('Keyboard /h4hr/keyboard_tool_command controls roll/grip.')
+        self.get_logger().info(f'use_keyboard_commands = {self.use_keyboard_commands}')
 
     def clamp(self, value, min_value, max_value):
         return max(min(value, max_value), min_value)
 
-    def quaternion_to_roll_deg(self, q):
-        x = q.x
-        y = q.y
-        z = q.z
-        w = q.w
+    def keyboard_callback(self, msg):
+        if len(msg.position) < 2:
+            self.get_logger().warn(
+                'Received /h4hr/keyboard_tool_command with fewer than 2 positions.'
+            )
+            return
 
-        sinr_cosp = 2.0 * (w * x + y * z)
-        cosr_cosp = 1.0 - 2.0 * (x * x + y * y)
+        self.keyboard_roll_deg = math.degrees(msg.position[0])
+        self.keyboard_grip_deg = math.degrees(msg.position[1])
+        self.last_keyboard_msg_time = time.time()
 
-        roll_rad = math.atan2(sinr_cosp, cosr_cosp)
-        return math.degrees(roll_rad)
+    def get_roll_and_grip_deg(self):
+        now = time.time()
+
+        keyboard_is_fresh = (
+            self.last_keyboard_msg_time > 0.0 and
+            now - self.last_keyboard_msg_time <= self.keyboard_timeout_sec
+        )
+
+        if self.use_keyboard_commands and keyboard_is_fresh:
+            roll_deg = self.keyboard_roll_deg
+            grip_deg = self.keyboard_grip_deg
+        else:
+            roll_deg = self.fixed_roll_deg
+            grip_deg = self.fixed_grip_deg
+
+        roll_deg = self.clamp(
+            roll_deg,
+            -self.max_roll_deg,
+            self.max_roll_deg
+        )
+
+        grip_deg = self.clamp(
+            grip_deg,
+            0.0,
+            self.max_grip_deg
+        )
+
+        return roll_deg, grip_deg
 
     def tip_callback(self, msg):
         x_tip = msg.pose.position.x
@@ -91,37 +132,20 @@ class TipIKNode(Node):
         distance = math.sqrt(dx * dx + dy * dy + dz * dz)
 
         if distance < self.deadzone_m:
-            roll_deg = 0.0
             pitch_deg = 0.0
             yaw_deg = 0.0
-            grip_deg = 0.0
 
             self.get_logger().warn(
-                'Desired tip point is too close to tool base. Publishing zero command.'
+                'Desired tip point is too close to tool base. Pitch/yaw set to zero.'
             )
         else:
             horizontal_distance = math.sqrt(dx * dx + dy * dy)
 
-            # Assumption:
-            # +X = forward along the tool shaft
-            # +Y = left
-            # +Z = up
             yaw_rad = math.atan2(dy, dx)
             pitch_rad = math.atan2(dz, horizontal_distance)
 
             yaw_deg = math.degrees(yaw_rad)
             pitch_deg = math.degrees(pitch_rad)
-
-            if self.use_pose_roll:
-                roll_deg = self.quaternion_to_roll_deg(msg.pose.orientation)
-            else:
-                roll_deg = self.fixed_roll_deg
-
-            roll_deg = self.clamp(
-                roll_deg,
-                -self.max_roll_deg,
-                self.max_roll_deg
-            )
 
             pitch_deg = self.clamp(
                 pitch_deg,
@@ -135,7 +159,7 @@ class TipIKNode(Node):
                 self.max_yaw_deg
             )
 
-            grip_deg = self.grip_deg
+        roll_deg, grip_deg = self.get_roll_and_grip_deg()
 
         joint_msg = JointState()
         joint_msg.header.stamp = self.get_clock().now().to_msg()
@@ -147,7 +171,6 @@ class TipIKNode(Node):
             'tool_grip'
         ]
 
-        # JointState uses radians.
         joint_msg.position = [
             math.radians(roll_deg),
             math.radians(pitch_deg),
@@ -159,10 +182,10 @@ class TipIKNode(Node):
 
         self.get_logger().info(
             f'Input tip: x={x_tip:.3f}, y={y_tip:.3f}, z={z_tip:.3f} m | '
-            f'IK output: roll={roll_deg:.1f} deg, '
-            f'pitch={pitch_deg:.1f} deg, '
-            f'yaw={yaw_deg:.1f} deg, '
-            f'grip={grip_deg:.1f} deg'
+            f'Output deg: roll={roll_deg:.1f}, '
+            f'pitch={pitch_deg:.1f}, '
+            f'yaw={yaw_deg:.1f}, '
+            f'grip={grip_deg:.1f}'
         )
 
 

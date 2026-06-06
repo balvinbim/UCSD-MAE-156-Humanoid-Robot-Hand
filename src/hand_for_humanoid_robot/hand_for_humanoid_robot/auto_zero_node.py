@@ -29,17 +29,22 @@ class AutoZeroNode(Node):
         self.declare_parameter('baudrate', 57600)
 
         self.declare_parameter('motor_ids', [1, 2, 3, 4])
-        self.declare_parameter('home_positions', [0, 3072, 2048, 2048])
+        self.declare_parameter('home_positions', [2048, 2048, 1024, 1024])
 
-        self.declare_parameter('home_speed_deg_per_sec', 20.0)
-        self.declare_parameter('sweep_speed_deg_per_sec', 20.0)
-        self.declare_parameter('return_home_speed_deg_per_sec', 20.0)
+        # Faster default speeds.
+        self.declare_parameter('home_speed_deg_per_sec', 40.0)
+        self.declare_parameter('sweep_speed_deg_per_sec', 60.0)
+        self.declare_parameter('return_home_speed_deg_per_sec', 60.0)
 
-        self.declare_parameter('profile_velocity', 80)
-        self.declare_parameter('motion_loop_sleep', 0.02)
+        # Higher Dynamixel profile velocity for faster motion.
+        self.declare_parameter('profile_velocity', 180)
 
-        self.declare_parameter('arrival_tolerance_counts', 20)
-        self.declare_parameter('arrival_timeout_sec', 10.0)
+        # Faster command loop.
+        self.declare_parameter('motion_loop_sleep', 0.01)
+
+        # More forgiving arrival behavior.
+        self.declare_parameter('arrival_tolerance_counts', 70)
+        self.declare_parameter('arrival_timeout_sec', 15.0)
 
         self.declare_parameter('exit_after_sequence', True)
 
@@ -988,7 +993,7 @@ class AutoZeroNode(Node):
         )
 
     def sweep_all_joints_with_coupling_matrix(self):
-        self.publish_status('STEP 3: Starting coupling-matrix joint sweep.')
+        self.publish_status('STEP 3: Starting FAST combined coupling-matrix joint sweep.')
 
         zero = {
             'roll': 0.0,
@@ -997,22 +1002,28 @@ class AutoZeroNode(Node):
             'grip': 0.0,
         }
 
+        # Fast combined sweep:
+        # This checks roll, pitch, yaw, and grip in fewer moves.
+        # It is faster than sweeping each joint separately.
         sweep_targets = [
             zero,
 
-            {'roll': self.roll_sweep_deg, 'pitch': 0.0, 'yaw': 0.0, 'grip': 0.0},
-            {'roll': -self.roll_sweep_deg, 'pitch': 0.0, 'yaw': 0.0, 'grip': 0.0},
+            {
+                'roll': self.roll_sweep_deg,
+                'pitch': self.pitch_sweep_deg,
+                'yaw': self.yaw_sweep_deg,
+                'grip': self.grip_open_deg,
+            },
+
             zero,
 
-            {'roll': 0.0, 'pitch': self.pitch_sweep_deg, 'yaw': 0.0, 'grip': 0.0},
-            {'roll': 0.0, 'pitch': -self.pitch_sweep_deg, 'yaw': 0.0, 'grip': 0.0},
-            zero,
+            {
+                'roll': -self.roll_sweep_deg,
+                'pitch': -self.pitch_sweep_deg,
+                'yaw': -self.yaw_sweep_deg,
+                'grip': 0.0,
+            },
 
-            {'roll': 0.0, 'pitch': 0.0, 'yaw': self.yaw_sweep_deg, 'grip': 0.0},
-            {'roll': 0.0, 'pitch': 0.0, 'yaw': -self.yaw_sweep_deg, 'grip': 0.0},
-            zero,
-
-            {'roll': 0.0, 'pitch': 0.0, 'yaw': 0.0, 'grip': self.grip_open_deg},
             zero,
         ]
 
@@ -1022,7 +1033,7 @@ class AutoZeroNode(Node):
                 return False
 
             self.publish_status(
-                f'Sweep waypoint {index + 1}/{len(sweep_targets)}: '
+                f'Fast sweep waypoint {index + 1}/{len(sweep_targets)}: '
                 f"roll={target['roll']:.1f}, "
                 f"pitch={target['pitch']:.1f}, "
                 f"yaw={target['yaw']:.1f}, "
@@ -1036,16 +1047,16 @@ class AutoZeroNode(Node):
 
             if not ok:
                 self.publish_status(
-                    'Sweep stopped because a waypoint failed. '
+                    'Fast sweep stopped because a waypoint failed. '
                     'Attempting safe return to zero.'
                 )
 
                 self.try_return_to_zero_after_failure()
                 return False
 
-            time.sleep(0.25)
+            time.sleep(0.10)
 
-        self.publish_status('Coupling-matrix joint sweep complete.')
+        self.publish_status('FAST combined coupling-matrix joint sweep complete.')
         return True
 
     def try_return_to_zero_after_failure(self):
@@ -1139,14 +1150,14 @@ class AutoZeroNode(Node):
     # -----------------------------
     def print_instructions(self):
         print()
-        print('H4HR Auto-Zero Node with dVRK Coupling Matrix')
-        print('---------------------------------------------')
+        print('H4HR Auto-Zero Node with FAST Combined dVRK Coupling Matrix Sweep')
+        print('----------------------------------------------------------------')
         print('Sequence:')
         print('  0. Confirm NO TOOL is inserted.')
         print('  1. Motors move to home positions.')
         print('  2. Insert tool.')
         print('  3. Confirm tool insertion.')
-        print('  4. Node performs joint-space sweep using coupling matrix.')
+        print('  4. Node performs fast combined joint-space sweep using coupling matrix.')
         print('  5. After completion, RViz control can start.')
         print()
         print('Recommended: use the Hand for Humanoid Robot UI node from another terminal.')
@@ -1181,7 +1192,14 @@ class AutoZeroNode(Node):
             lower, upper = self.disk_angle_limits_deg[dxl_id]
             print(f'  Disk {dxl_id}: {lower:.1f} deg to {upper:.1f} deg')
         print()
-        print('Joint sweep:')
+        print('Fast joint sweep:')
+        print(f'  Waypoint 1: zero')
+        print(f'  Waypoint 2: +Roll, +Pitch, +Yaw, Grip open')
+        print(f'  Waypoint 3: zero')
+        print(f'  Waypoint 4: -Roll, -Pitch, -Yaw, Grip closed')
+        print(f'  Waypoint 5: zero')
+        print()
+        print('Sweep magnitudes:')
         print(f'  Roll:  +/-{self.roll_sweep_deg:.1f} deg')
         print(f'  Pitch: +/-{self.pitch_sweep_deg:.1f} deg')
         print(f'  Yaw:   +/-{self.yaw_sweep_deg:.1f} deg')

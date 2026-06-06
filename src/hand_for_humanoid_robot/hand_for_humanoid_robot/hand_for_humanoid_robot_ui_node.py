@@ -3,6 +3,7 @@
 import sys
 import select
 import math
+import time
 
 import rclpy
 from rclpy.node import Node
@@ -34,7 +35,7 @@ class HandForHumanoidRobotUiNode(Node):
             10
         )
 
-        # Sends actual motor command back to zero through the controller path.
+        # Sends motor command back to zero through the controller path.
         self.motor_reset_pub = self.create_publisher(
             JointState,
             '/h4hr/joint_command',
@@ -82,7 +83,7 @@ class HandForHumanoidRobotUiNode(Node):
             self.get_logger().info('Published: confirm tool inserted.')
 
         elif line == 'r':
-            self.reset_to_home()
+            self.home_reset()
 
         elif line == '?':
             self.print_menu()
@@ -94,50 +95,67 @@ class HandForHumanoidRobotUiNode(Node):
         else:
             print(f'Unknown command: "{line}". Type ? for menu.')
 
-    def reset_to_home(self):
-        # Topic used by RViz orientation control node.
-        rviz_msg = JointState()
-        rviz_msg.header.stamp = self.get_clock().now().to_msg()
+    def make_rviz_home_msg(self):
+        msg = JointState()
+        msg.header.stamp = self.get_clock().now().to_msg()
 
-        rviz_msg.name = [
+        msg.name = [
             'tool_roll',
             'tool_pitch',
             'tool_yaw',
             'tool_grip',
         ]
 
-        rviz_msg.position = [
+        msg.position = [
             math.radians(0.0),
             math.radians(0.0),
             math.radians(0.0),
             math.radians(0.0),
         ]
 
-        # Topic used by Dynamixel controller.
-        motor_msg = JointState()
-        motor_msg.header.stamp = self.get_clock().now().to_msg()
+        return msg
 
-        motor_msg.name = [
+    def make_motor_home_msg(self):
+        msg = JointState()
+        msg.header.stamp = self.get_clock().now().to_msg()
+
+        msg.name = [
             'roll_joint',
             'pitch_joint',
             'yaw_joint',
             'grip_joint',
         ]
 
-        motor_msg.position = [
+        msg.position = [
             math.radians(0.0),
             math.radians(0.0),
             math.radians(0.0),
             math.radians(0.0),
         ]
 
-        # Publish several times so subscribers reliably receive the reset.
-        for _ in range(5):
+        return msg
+
+    def home_reset(self):
+        self.get_logger().info(
+            'Reset requested: sending RViz and motor commands to R=0, P=0, Y=0, G=0.'
+        )
+
+        start_time = time.time()
+        duration_sec = 1.0
+        publish_rate_hz = 20.0
+        sleep_time = 1.0 / publish_rate_hz
+
+        while time.time() - start_time < duration_sec and rclpy.ok():
+            rviz_msg = self.make_rviz_home_msg()
+            motor_msg = self.make_motor_home_msg()
+
             self.marker_reset_pub.publish(rviz_msg)
             self.motor_reset_pub.publish(motor_msg)
 
+            time.sleep(sleep_time)
+
         self.get_logger().info(
-            'Published reset: RViz command and motor command set to R=0, P=0, Y=0, G=0.'
+            'Reset complete: RViz command and motor command set to R=0, P=0, Y=0, G=0.'
         )
 
 

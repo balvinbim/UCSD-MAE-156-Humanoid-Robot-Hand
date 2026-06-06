@@ -33,7 +33,7 @@ class KeyboardControlNode(Node):
         # Motor 2 = Disk 2
         # Motor 3 = Disk 3
         # Motor 4 = Disk 4
-        self.declare_parameter('home_positions', [2048, 0, 3072, 2048])
+        self.declare_parameter('home_positions', [2048, 2048, 1024, 1024])
 
         # Joint step size in degrees for keyboard jogging.
         self.declare_parameter('joint_step_deg', 1.0)

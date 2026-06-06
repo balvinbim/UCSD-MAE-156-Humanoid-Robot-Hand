@@ -49,6 +49,7 @@ setup(
             'tool_keyboard_control_node = hand_for_humanoid_robot.tool_keyboard_control_node:main',
             'hand_for_humanoid_robot_ui_node = hand_for_humanoid_robot.hand_for_humanoid_robot_ui_node:main',
             'rviz_orientation_control_node = hand_for_humanoid_robot.rviz_orientation_control_node:main',
+	    'degree_command_node = hand_for_humanoid_robot.degree_command_node:main',
         ],
     },
 )

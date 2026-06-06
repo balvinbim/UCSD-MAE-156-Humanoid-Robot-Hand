@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 
+import os
+
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument
 from launch.actions import GroupAction
@@ -10,6 +12,8 @@ from launch.event_handlers import OnProcessExit
 from launch.substitutions import LaunchConfiguration
 
 from launch_ros.actions import Node
+
+from ament_index_python.packages import get_package_share_directory
 
 
 def generate_launch_description():
@@ -24,6 +28,13 @@ def generate_launch_description():
     max_yaw_deg = LaunchConfiguration('max_yaw_deg')
     max_grip_deg = LaunchConfiguration('max_grip_deg')
     input_rotation_full_scale_deg = LaunchConfiguration('input_rotation_full_scale_deg')
+
+    package_share = get_package_share_directory('hand_for_humanoid_robot')
+    rviz_config = os.path.join(
+        package_share,
+        'rviz',
+        'rviz_orientation_control.rviz'
+    )
 
     control_nodes = GroupAction([
         Node(
@@ -89,6 +100,11 @@ def generate_launch_description():
                 {
                     'device_name': device_name,
                     'baudrate': baudrate,
+
+                    'max_roll_deg': max_roll_deg,
+                    'max_pitch_deg': max_pitch_deg,
+                    'max_yaw_deg': max_yaw_deg,
+                    'max_grip_deg': max_grip_deg,
                 }
             ]
         ),
@@ -97,6 +113,7 @@ def generate_launch_description():
             package='rviz2',
             executable='rviz2',
             name='rviz2',
+            arguments=['-d', rviz_config],
             output='screen',
             condition=IfCondition(use_rviz)
         ),
@@ -113,8 +130,6 @@ def generate_launch_description():
                 'device_name': device_name,
                 'baudrate': baudrate,
 
-                # Auto-zero should exit after success.
-                # If it fails, it should stay alive so control nodes do not start.
                 'exit_after_sequence': True,
 
                 # Torque off before handing serial control to dynamixel_controller_node.
@@ -150,7 +165,7 @@ def generate_launch_description():
 
         DeclareLaunchArgument(
             'frame_id',
-            default_value='base_link',
+            default_value='world',
             description='Frame used by the RViz orientation cube'
         ),
 

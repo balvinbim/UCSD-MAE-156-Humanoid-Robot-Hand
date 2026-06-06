@@ -30,7 +30,7 @@ class DynamixelControllerNode(Node):
         self.declare_parameter('motor_ids', [1, 2, 3, 4])
 
         # Home positions should match your auto-zero home positions.
-        self.declare_parameter('home_positions', [0, 3072, 2048, 2048])
+        self.declare_parameter('home_positions', [2048, 2048, 1024, 1024])
 
         # Actual operation speed.
         self.declare_parameter('command_speed_deg_per_sec', 50.0)

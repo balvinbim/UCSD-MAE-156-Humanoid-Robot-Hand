@@ -85,7 +85,7 @@ def generate_launch_description():
                     'max_roll_deg': max_roll_deg,
                     'max_pitch_deg': max_pitch_deg,
                     'max_yaw_deg': max_yaw_deg,
-                    'min_grip_deg': 0.0,
+                    'min_grip_deg': -15.0,
                     'max_grip_deg': max_grip_deg,
                 }
             ]
@@ -189,7 +189,7 @@ def generate_launch_description():
 
         DeclareLaunchArgument(
             'max_grip_deg',
-            default_value='30.0',
+            default_value='38.0',
             description='Maximum allowed grip command in degrees'
         ),
 

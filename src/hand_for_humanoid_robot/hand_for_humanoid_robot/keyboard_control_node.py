@@ -16,47 +16,32 @@ class KeyboardControlNode(Node):
     def __init__(self):
         super().__init__('keyboard_control_node')
 
-        # -----------------------------
-        # ROS parameters
-        # -----------------------------
         self.declare_parameter(
             'device_name',
             '/dev/serial/by-id/usb-ROBOTIS_OpenRB-150_F42208A55157375037202020FF122F34-if00'
         )
         self.declare_parameter('baudrate', 57600)
 
-        # Motor IDs correspond to Disk 1, Disk 2, Disk 3, Disk 4.
         self.declare_parameter('motor_ids', [1, 2, 3, 4])
-
-        # Disk zero/home positions.
-        # Motor 1 = Disk 1
-        # Motor 2 = Disk 2
-        # Motor 3 = Disk 3
-        # Motor 4 = Disk 4
         self.declare_parameter('home_positions', [2048, 2048, 1024, 1024])
 
-        # Joint step size in degrees for keyboard jogging.
         self.declare_parameter('joint_step_deg', 1.0)
+        self.declare_parameter('diagonal_roll_step_deg', 1.0)
 
-        # Open/close gripper target angles in degrees.
-        self.declare_parameter('grip_open_deg', 30.0)
-        self.declare_parameter('grip_closed_deg', 0.0)
+        # Close command goes slightly farther now.
+        # Since gripper direction is inverted, close_gripper() uses this value.
+        self.declare_parameter('grip_open_deg', 38.0)
+        self.declare_parameter('grip_closed_deg', -15.0)
 
-        # Joint motion speed.
-        self.declare_parameter('joint_speed_deg_per_sec', 35.0)
-
-        # Sleep between command updates.
+        self.declare_parameter('joint_speed_deg_per_sec', 45.0)
         self.declare_parameter('motion_loop_sleep', 0.01)
+        self.declare_parameter('profile_velocity', 180)
 
-        # Dynamixel internal profile velocity.
-        # Keep this high enough that the software speed command is the limiting factor.
-        self.declare_parameter('profile_velocity', 80)
+        self.declare_parameter('arrival_tolerance_counts', 70)
+        self.declare_parameter('arrival_timeout_sec', 15.0)
 
-        # How close the physical motor position must be before a waypoint is considered reached.
-        self.declare_parameter('arrival_tolerance_counts', 20)
-
-        # Maximum time allowed per waypoint before that motor sequence is stopped.
-        self.declare_parameter('arrival_timeout_sec', 45.0)
+        self.declare_parameter('verbose_motion_logging', False)
+        self.declare_parameter('torque_off_on_shutdown', True)
 
         self.device_name = self.get_parameter('device_name').value
         self.baudrate = int(self.get_parameter('baudrate').value)
@@ -64,6 +49,10 @@ class KeyboardControlNode(Node):
         self.home_positions = list(self.get_parameter('home_positions').value)
 
         self.joint_step_deg = float(self.get_parameter('joint_step_deg').value)
+        self.diagonal_roll_step_deg = float(
+            self.get_parameter('diagonal_roll_step_deg').value
+        )
+
         self.grip_open_deg = float(self.get_parameter('grip_open_deg').value)
         self.grip_closed_deg = float(self.get_parameter('grip_closed_deg').value)
 
@@ -75,9 +64,13 @@ class KeyboardControlNode(Node):
         self.arrival_tolerance_counts = int(self.get_parameter('arrival_tolerance_counts').value)
         self.arrival_timeout_sec = float(self.get_parameter('arrival_timeout_sec').value)
 
-        # -----------------------------
-        # Dynamixel settings
-        # -----------------------------
+        self.verbose_motion_logging = bool(
+            self.get_parameter('verbose_motion_logging').value
+        )
+        self.torque_off_on_shutdown = bool(
+            self.get_parameter('torque_off_on_shutdown').value
+        )
+
         self.protocol_version = 2.0
 
         self.ADDR_OPERATING_MODE = 11
@@ -88,24 +81,21 @@ class KeyboardControlNode(Node):
 
         self.TORQUE_DISABLE = 0
         self.TORQUE_ENABLE = 1
-
-        # Extended Position Control Mode allows position values outside 0-4095.
         self.EXTENDED_POSITION_CONTROL_MODE = 4
 
-        # 4096 counts = 360 degrees.
         self.COUNTS_PER_DEGREE = 4096.0 / 360.0
 
-        # -----------------------------
-        # dVRK coupling matrix
-        # -----------------------------
-        # The uploaded dVRK matrix is:
-        #
-        # Roll  = -1.56323325 * Disk1
-        # Pitch =  1.01857984 * Disk2
-        # Yaw   = -0.830634273 * Disk2 + 0.608862987 * Disk3 + 0.608862987 * Disk4
-        # Grip  = -1.21772597 * Disk3 + 1.21772597 * Disk4
-        #
-        # All angles are treated in degrees because the matrix is unitless.
+        # Motor direction correction.
+        # Motors 3 and 4 are reversed because their physical clockwise/counterclockwise
+        # directions are opposite of what the coupling matrix expects.
+        self.motor_direction = {
+            1: 1.0,
+            2: 1.0,
+            3: -1.0,
+            4: -1.0,
+        }
+
+        # dVRK coupling matrix.
         self.ROLL_D1 = -1.56323325
         self.PITCH_D2 = 1.01857984
         self.YAW_D2 = -0.830634273
@@ -114,33 +104,33 @@ class KeyboardControlNode(Node):
         self.GRIP_D3 = -1.21772597
         self.GRIP_D4 = 1.21772597
 
-        # Joint limits from the uploaded dVRK guide.
         self.joint_limits_deg = {
             'roll': (-259.0, 259.0),
             'pitch': (-79.0, 79.0),
-            'yaw': (-80.0, 80.0),
-            'grip': (0.0, 30.0),
+            'yaw': (-79.0, 79.0),
+            'grip': (-15.0, 38.0),
         }
 
-        # Extra disk-level safety limits.
-        # These are limits on the physical disk/motor angle relative to home.
-        # They prevent the coupling matrix from commanding extreme motor rotations.
         self.disk_angle_limits_deg = {
             1: (-166.0, 166.0),
             2: (-78.5, 78.5),
             3: (-150.0, 150.0),
-            4: (-150.0, 150.0),
+            4: (-153.0, 153.0),
         }
 
         self.motor_position_limits = {}
 
         for dxl_id, home_position in zip(self.motor_ids, self.home_positions):
             min_deg, max_deg = self.disk_angle_limits_deg[dxl_id]
-            min_count = int(home_position + min_deg * self.COUNTS_PER_DEGREE)
-            max_count = int(home_position + max_deg * self.COUNTS_PER_DEGREE)
-            self.motor_position_limits[dxl_id] = (min_count, max_count)
 
-        # Current desired joint position in degrees.
+            min_count_raw = self.disk_angle_to_motor_position(dxl_id, min_deg)
+            max_count_raw = self.disk_angle_to_motor_position(dxl_id, max_deg)
+
+            self.motor_position_limits[dxl_id] = (
+                min(min_count_raw, max_count_raw),
+                max(min_count_raw, max_count_raw),
+            )
+
         self.joint_targets_deg = {
             'roll': 0.0,
             'pitch': 0.0,
@@ -152,17 +142,20 @@ class KeyboardControlNode(Node):
         self.packet_handler = PacketHandler(self.protocol_version)
 
         self.goal_positions = {}
-
-        # Lock protects serial communication.
         self.dxl_lock = threading.Lock()
 
         self.connect_to_motors()
+        self.sync_joint_targets_to_present_position()
         self.print_instructions()
 
-    # -----------------------------
-    # Connection and communication
-    # -----------------------------
+    def log_motion(self, text):
+        if self.verbose_motion_logging:
+            self.get_logger().info(text)
+
     def connect_to_motors(self):
+        if len(self.motor_ids) != len(self.home_positions):
+            raise RuntimeError('motor_ids and home_positions must be same length.')
+
         if not self.port_handler.openPort():
             raise RuntimeError(f'Failed to open port: {self.device_name}')
 
@@ -183,7 +176,7 @@ class KeyboardControlNode(Node):
         for dxl_id in self.motor_ids:
             self.sync_goal_to_present_position(dxl_id)
 
-        self.move_to_joint_targets(self.joint_targets_deg, self.joint_speed_deg_per_sec)
+        self.hold_current_positions()
 
     def check_result(self, comm_result, dxl_error, action):
         if comm_result != COMM_SUCCESS:
@@ -249,9 +242,6 @@ class KeyboardControlNode(Node):
 
         return None
 
-    # -----------------------------
-    # Signed / unsigned conversion
-    # -----------------------------
     def signed_to_unsigned_32(self, value):
         return int(value) & 0xFFFFFFFF
 
@@ -263,9 +253,6 @@ class KeyboardControlNode(Node):
 
         return value
 
-    # -----------------------------
-    # Position helpers
-    # -----------------------------
     def read_present_position(self, dxl_id):
         present = self.read_4_byte(
             dxl_id,
@@ -294,20 +281,25 @@ class KeyboardControlNode(Node):
         index = self.motor_ids.index(dxl_id)
         return int(self.home_positions[index])
 
+    def get_motor_direction(self, dxl_id):
+        return float(self.motor_direction.get(dxl_id, 1.0))
+
     def motor_position_to_disk_angle(self, dxl_id, position):
         home = self.get_home_position(dxl_id)
-        return float(position - home) / self.COUNTS_PER_DEGREE
+        direction = self.get_motor_direction(dxl_id)
+        return float(position - home) / (direction * self.COUNTS_PER_DEGREE)
 
     def disk_angle_to_motor_position(self, dxl_id, disk_angle_deg):
         home = self.get_home_position(dxl_id)
-        return int(home + disk_angle_deg * self.COUNTS_PER_DEGREE)
+        direction = self.get_motor_direction(dxl_id)
+        return int(home + direction * disk_angle_deg * self.COUNTS_PER_DEGREE)
 
     def is_position_inside_bounds(self, dxl_id, position):
         if dxl_id not in self.motor_position_limits:
             return False
 
         min_position, max_position = self.motor_position_limits[dxl_id]
-        return min_position <= position <= max_position
+        return min_position <= int(position) <= max_position
 
     def clamp_joint(self, joint_name, angle_deg):
         if joint_name not in self.joint_limits_deg:
@@ -370,7 +362,7 @@ class KeyboardControlNode(Node):
             f'Set goal position motor {dxl_id}'
         )
 
-        if ok and log:
+        if ok and log and self.verbose_motion_logging:
             disk_angle = self.motor_position_to_disk_angle(dxl_id, safe_position)
             self.get_logger().info(
                 f'Motor {dxl_id} / Disk {dxl_id} goal: '
@@ -379,25 +371,7 @@ class KeyboardControlNode(Node):
 
         return ok
 
-    # -----------------------------
-    # Coupling matrix helpers
-    # -----------------------------
     def joints_to_disks(self, joints_deg):
-        """
-        Convert desired joint angles to disk angles.
-
-        Matrix:
-            Roll  = ROLL_D1 * D1
-            Pitch = PITCH_D2 * D2
-            Yaw   = YAW_D2 * D2 + YAW_D3 * D3 + YAW_D4 * D4
-            Grip  = GRIP_D3 * D3 + GRIP_D4 * D4
-
-        Since YAW_D3 == YAW_D4 and GRIP_D3 == -GRIP_D4, the D3/D4 solution is:
-
-            D3 + D4 = (Yaw - YAW_D2 * D2) / YAW_D3
-            D4 - D3 = Grip / GRIP_D4
-        """
-
         roll = float(joints_deg['roll'])
         pitch = float(joints_deg['pitch'])
         yaw = float(joints_deg['yaw'])
@@ -466,6 +440,37 @@ class KeyboardControlNode(Node):
 
         return motor_positions
 
+    def present_disk_angles(self):
+        disks = {}
+
+        for dxl_id in self.motor_ids:
+            present = self.read_present_position(dxl_id)
+
+            if present is None:
+                disks[dxl_id] = 0.0
+                continue
+
+            disks[dxl_id] = self.motor_position_to_disk_angle(dxl_id, present)
+
+        return disks
+
+    def sync_joint_targets_to_present_position(self):
+        disks = self.present_disk_angles()
+        joints = self.disks_to_joints(disks)
+
+        for name in self.joint_targets_deg:
+            joints[name] = self.clamp_joint(name, joints[name])
+
+        self.joint_targets_deg = joints
+
+        self.get_logger().info(
+            'Synced keyboard targets to current motor positions: '
+            f"R={joints['roll']:.1f}, "
+            f"P={joints['pitch']:.1f}, "
+            f"Y={joints['yaw']:.1f}, "
+            f"G={joints['grip']:.1f}"
+        )
+
     def print_joint_and_disk_targets(self, joints_deg):
         disk_angles = self.joints_to_disks(joints_deg)
 
@@ -485,9 +490,6 @@ class KeyboardControlNode(Node):
             f"D4={disk_angles[4]:.1f} deg"
         )
 
-    # -----------------------------
-    # Mode setup
-    # -----------------------------
     def set_motor_extended_position_mode(self, dxl_id):
         self.write_1_byte(
             dxl_id,
@@ -523,12 +525,8 @@ class KeyboardControlNode(Node):
 
         self.get_logger().info('Set all motors to EXTENDED POSITION control mode.')
 
-    # -----------------------------
-    # Independent multi-motor sequence logic
-    # -----------------------------
     def run_independent_motor_sequences(self, sequences, speed_deg_per_sec):
         states = {}
-
         speed_deg_per_sec = abs(float(speed_deg_per_sec))
 
         if speed_deg_per_sec <= 0.0:
@@ -591,25 +589,9 @@ class KeyboardControlNode(Node):
                 'done': False,
             }
 
-            waypoint_text = ', '.join(
-                f'{position} ({self.motor_position_to_disk_angle(dxl_id, position):.1f} deg)'
-                for position in valid_waypoints
-            )
-
-            self.get_logger().warn(
-                f'Motor {dxl_id} / Disk {dxl_id} sequence armed from present {present} '
-                f'({self.motor_position_to_disk_angle(dxl_id, present):.1f} deg) '
-                f'to waypoints: {waypoint_text}'
-            )
-
         if not states:
             self.get_logger().error('No valid motor sequences to run.')
             return False
-
-        self.get_logger().warn(
-            f'Running independent motor sequences for motors {list(states.keys())}. '
-            f'Angular speed: {speed_deg_per_sec:.1f} deg/sec.'
-        )
 
         while rclpy.ok():
             all_done = True
@@ -639,31 +621,14 @@ class KeyboardControlNode(Node):
                 if abs(present_error) <= self.arrival_tolerance_counts:
                     self.command_position(dxl_id, target_position, log=False)
 
-                    self.get_logger().info(
-                        f'Motor {dxl_id} reached waypoint {waypoint_index + 1}/'
-                        f'{len(waypoints)}: {target_position} '
-                        f'({self.motor_position_to_disk_angle(dxl_id, target_position):.1f} deg).'
-                    )
-
                     state['index'] += 1
 
                     if state['index'] >= len(waypoints):
                         state['done'] = True
-                        self.get_logger().info(
-                            f'Motor {dxl_id} sequence complete. Holding final position.'
-                        )
                         continue
 
                     state['waypoint_start_time'] = now
                     state['last_update_time'] = now
-
-                    next_target = waypoints[state['index']]
-
-                    self.get_logger().info(
-                        f'Motor {dxl_id} moving to next waypoint: {next_target} '
-                        f'({self.motor_position_to_disk_angle(dxl_id, next_target):.1f} deg).'
-                    )
-
                     continue
 
                 elapsed_at_waypoint = now - state['waypoint_start_time']
@@ -705,16 +670,12 @@ class KeyboardControlNode(Node):
                 self.command_position(dxl_id, next_command, log=False)
 
             if all_done:
-                self.get_logger().info('Motor sequence group complete.')
                 return True
 
             time.sleep(self.motion_loop_sleep)
 
         return False
 
-    # -----------------------------
-    # Joint control logic
-    # -----------------------------
     def move_to_joint_targets(self, joints_deg, speed_deg_per_sec):
         motor_positions = self.joint_targets_to_motor_positions(joints_deg)
 
@@ -727,28 +688,29 @@ class KeyboardControlNode(Node):
         for dxl_id, position in motor_positions.items():
             sequences[dxl_id] = [position]
 
-        self.print_joint_and_disk_targets(joints_deg)
+        if self.verbose_motion_logging:
+            self.print_joint_and_disk_targets(joints_deg)
 
-        ok = self.run_independent_motor_sequences(
-            sequences,
-            speed_deg_per_sec
-        )
+        return self.run_independent_motor_sequences(sequences, speed_deg_per_sec)
 
-        return ok
-
-    def update_joint_target(self, joint_name, direction):
-        if joint_name not in self.joint_targets_deg:
-            self.get_logger().error(f'Unknown joint: {joint_name}')
-            return
-
+    def apply_joint_delta(self, roll_delta, pitch_delta, yaw_delta, grip_delta=0.0):
         new_targets = dict(self.joint_targets_deg)
-        new_angle = new_targets[joint_name] + direction * self.joint_step_deg
-        new_angle = self.clamp_joint(joint_name, new_angle)
 
-        if new_angle is None:
-            return
+        deltas = {
+            'roll': roll_delta,
+            'pitch': pitch_delta,
+            'yaw': yaw_delta,
+            'grip': grip_delta,
+        }
 
-        new_targets[joint_name] = new_angle
+        for joint_name, delta in deltas.items():
+            new_angle = new_targets[joint_name] + delta
+            new_angle = self.clamp_joint(joint_name, new_angle)
+
+            if new_angle is None:
+                return
+
+            new_targets[joint_name] = new_angle
 
         ok = self.move_to_joint_targets(new_targets, self.joint_speed_deg_per_sec)
 
@@ -787,54 +749,25 @@ class KeyboardControlNode(Node):
             self.joint_targets_deg = new_targets
 
     def open_gripper(self):
-        self.get_logger().warn('Opening gripper.')
-        self.set_joint_target('grip', self.grip_open_deg)
+        # Inverted grip direction.
+        self.set_joint_target('grip', self.grip_closed_deg)
 
     def close_gripper(self):
-        self.get_logger().warn('Closing gripper.')
-        self.set_joint_target('grip', self.grip_closed_deg)
+        # Inverted grip direction.
+        # Close now goes slightly farther: 36 deg.
+        self.set_joint_target('grip', self.grip_open_deg)
 
     def toggle_gripper(self):
         current_grip = self.joint_targets_deg['grip']
         halfway = 0.5 * (self.grip_open_deg + self.grip_closed_deg)
 
         if current_grip < halfway:
-            self.open_gripper()
-        else:
             self.close_gripper()
+        else:
+            self.open_gripper()
 
-    def sweep_joint(self, joint_name):
-        if joint_name not in self.joint_limits_deg:
-            self.get_logger().error(f'Unknown joint: {joint_name}')
-            return
-
-        min_deg, max_deg = self.joint_limits_deg[joint_name]
-
-        original_targets = dict(self.joint_targets_deg)
-
-        sequence_targets = [
-            dict(original_targets, **{joint_name: 0.0}),
-            dict(original_targets, **{joint_name: min_deg}),
-            dict(original_targets, **{joint_name: max_deg}),
-            dict(original_targets, **{joint_name: 0.0}),
-        ]
-
-        for target in sequence_targets:
-            ok = self.move_to_joint_targets(target, self.joint_speed_deg_per_sec)
-
-            if not ok:
-                self.get_logger().error(f'{joint_name} sweep stopped.')
-                return
-
-            self.joint_targets_deg = target
-
-        self.get_logger().info(f'{joint_name} sweep complete.')
-
-    # -----------------------------
-    # Safety actions
-    # -----------------------------
     def hold_current_positions(self):
-        self.get_logger().info('Holding current positions.')
+        self.get_logger().info('Holding current motor positions.')
 
         for dxl_id in self.motor_ids:
             present = self.read_present_position(dxl_id)
@@ -849,7 +782,7 @@ class KeyboardControlNode(Node):
                 )
                 continue
 
-            self.command_position(dxl_id, present)
+            self.command_position(dxl_id, present, log=False)
 
     def emergency_torque_off(self):
         self.get_logger().warn('EMERGENCY STOP: disabling torque on all motors.')
@@ -878,44 +811,36 @@ class KeyboardControlNode(Node):
 
         self.get_logger().info(f'Joint step increased to {self.joint_step_deg:.1f} deg')
 
-    # -----------------------------
-    # UI
-    # -----------------------------
     def print_instructions(self):
         print()
-        print('H4HR Keyboard Control Node - JOINT CONTROL WITH dVRK COUPLING MATRIX')
-        print('-------------------------------------------------------------------')
-        print('Motor/Disk Mapping:')
-        print('  Motor ID 1 = Disk 1')
-        print('  Motor ID 2 = Disk 2')
-        print('  Motor ID 3 = Disk 3')
-        print('  Motor ID 4 = Disk 4')
+        print('H4HR Keyboard Control Node - NUMPAD TOOL CONTROL')
+        print('------------------------------------------------')
+        print('This node directly opens the OpenRB/Dynamixel port.')
+        print('Do NOT run this at the same time as auto_zero_node, dynamixel_controller_node, or rfid_detection_node.')
         print()
-        print('JOINT CONTROL KEYS:')
-        print('  q : increase roll')
-        print('  e : decrease roll')
-        print('  u : increase pitch')
-        print('  o : decrease pitch')
-        print('  a : increase yaw')
-        print('  d : decrease yaw')
-        print('  j : increase grip')
-        print('  l : decrease grip')
+        print('Make sure Num Lock is ON.')
         print()
-        print('GRIPPER BUTTONS:')
-        print('  [ : close gripper')
-        print('  ] : open gripper')
-        print('  g : toggle open/close gripper')
+        print('MOTOR DIRECTION FIX:')
+        print('  Motor 3 direction inverted')
+        print('  Motor 4 direction inverted')
         print()
-        print('SWEEP KEYS:')
-        print('  7 : sweep roll joint 0 -> min -> max -> 0')
-        print('  8 : sweep pitch joint 0 -> min -> max -> 0')
-        print('  9 : sweep yaw joint 0 -> min -> max -> 0')
+        print('NUMPAD CONTROL:')
+        print('  7 : forward + left + roll left')
+        print('  8 : forward')
+        print('  9 : forward + right + roll right')
+        print('  4 : left / yaw left')
+        print('  5 : hold current position')
+        print('  6 : right / yaw right')
+        print('  1 : backward + left + roll left')
+        print('  2 : backward')
+        print('  3 : backward + right + roll right')
+        print('  0 : return all joints to zero / home command')
+        print('  . : toggle gripper open/close')
         print()
         print('OTHER:')
         print('  +  : increase joint step by 1 deg')
         print('  -  : decrease joint step by 1 deg')
-        print('  0  : return all joints to zero / gripper closed')
-        print('  1  : EMERGENCY TORQUE OFF')
+        print('  e  : EMERGENCY TORQUE OFF')
         print('  `  : quit')
         print()
         print('CURRENT JOINT TARGETS:')
@@ -931,27 +856,18 @@ class KeyboardControlNode(Node):
             min_deg, max_deg = self.disk_angle_limits_deg[dxl_id]
             print(f'  Disk/Motor {dxl_id}: {min_deg:.1f} deg to {max_deg:.1f} deg')
         print()
-        print('HOME POSITIONS:')
-        for dxl_id, home_position in zip(self.motor_ids, self.home_positions):
-            print(f'  Motor {dxl_id}: {home_position}')
-        print()
-        print('SAFE POSITION LIMITS:')
-        for dxl_id in self.motor_ids:
-            min_position, max_position = self.motor_position_limits[dxl_id]
-            print(f'  Motor {dxl_id}: {min_position} to {max_position}')
-        print()
         print(f'Joint step: {self.joint_step_deg:.1f} deg')
+        print(f'Diagonal roll step: {self.diagonal_roll_step_deg:.1f} deg')
         print(f'Joint speed: {self.joint_speed_deg_per_sec:.1f} deg/sec')
-        print(f'Motion loop sleep: {self.motion_loop_sleep}')
-        print(f'Profile velocity: {self.profile_velocity}')
-        print(f'Arrival tolerance counts: {self.arrival_tolerance_counts}')
-        print(f'Arrival timeout sec: {self.arrival_timeout_sec}')
+        print(f'Verbose motion logging: {self.verbose_motion_logging}')
         print()
         print('IMPORTANT:')
-        print('  Keep one hand near motor power.')
-        print('  Press 1 to disable torque immediately.')
-        print('  Joint commands are converted to disk commands using the dVRK coupling matrix.')
-        print('  Disk-level safety limits are still enforced.')
+        print('  Motor 3 and Motor 4 are direction-corrected in software.')
+        print('  Left/right yaw signs are uninverted in this version.')
+        print('  Gripper direction is inverted.')
+        print('  open command -> grip 0 deg')
+        print('  close command -> grip 36 deg')
+        print('  Press e to disable torque immediately.')
         print()
 
     def get_key(self):
@@ -966,8 +882,59 @@ class KeyboardControlNode(Node):
             termios.tcsetattr(sys.stdin, termios.TCSADRAIN, old_settings)
 
     def handle_key(self, key):
+        step = self.joint_step_deg
+        roll_step = self.diagonal_roll_step_deg
+
         if key == '`':
             return False
+
+        # Forward/backward are still inverted.
+        # Left/right yaw signs have been uninverted from the previous version.
+
+        if key == '7':
+            self.apply_joint_delta(+roll_step, -step, -step)
+            return True
+
+        if key == '8':
+            self.apply_joint_delta(0.0, -step, 0.0)
+            return True
+
+        if key == '9':
+            self.apply_joint_delta(-roll_step, -step, +step)
+            return True
+
+        if key == '4':
+            self.apply_joint_delta(0.0, 0.0, -step)
+            return True
+
+        if key == '5':
+            self.hold_current_positions()
+            self.sync_joint_targets_to_present_position()
+            return True
+
+        if key == '6':
+            self.apply_joint_delta(0.0, 0.0, +step)
+            return True
+
+        if key == '1':
+            self.apply_joint_delta(+roll_step, +step, -step)
+            return True
+
+        if key == '2':
+            self.apply_joint_delta(0.0, +step, 0.0)
+            return True
+
+        if key == '3':
+            self.apply_joint_delta(-roll_step, +step, +step)
+            return True
+
+        if key == '0':
+            self.zero_all_joints()
+            return True
+
+        if key == '.':
+            self.toggle_gripper()
+            return True
 
         if key == '+':
             self.increase_step()
@@ -977,68 +944,8 @@ class KeyboardControlNode(Node):
             self.decrease_step()
             return True
 
-        if key == '0':
-            self.zero_all_joints()
-            return True
-
-        if key == '1':
-            self.emergency_torque_off()
-            return True
-
-        if key == '[':
-            self.close_gripper()
-            return True
-
-        if key == ']':
-            self.open_gripper()
-            return True
-
-        if key == 'g':
-            self.toggle_gripper()
-            return True
-
-        if key == '7':
-            self.sweep_joint('roll')
-            return True
-
-        if key == '8':
-            self.sweep_joint('pitch')
-            return True
-
-        if key == '9':
-            self.sweep_joint('yaw')
-            return True
-
-        if key == 'q':
-            self.update_joint_target('roll', +1)
-            return True
-
         if key == 'e':
-            self.update_joint_target('roll', -1)
-            return True
-
-        if key == 'u':
-            self.update_joint_target('pitch', +1)
-            return True
-
-        if key == 'o':
-            self.update_joint_target('pitch', -1)
-            return True
-
-        if key == 'a':
-            self.update_joint_target('yaw', +1)
-            return True
-
-        if key == 'd':
-            self.update_joint_target('yaw', -1)
-            return True
-
-        if key == 'j':
-            self.update_joint_target('grip', +1)
-            return True
-
-        if key == 'l':
-            self.update_joint_target('grip', -1)
+            self.emergency_torque_off()
             return True
 
         return True
@@ -1051,14 +958,17 @@ class KeyboardControlNode(Node):
             running = self.handle_key(key)
 
     def shutdown(self):
-        self.emergency_torque_off()
+        if self.torque_off_on_shutdown:
+            self.emergency_torque_off()
+        else:
+            self.get_logger().warn('Leaving motor torque enabled on shutdown.')
+
         self.port_handler.closePort()
         self.get_logger().info('Closed Dynamixel port.')
 
 
 def main(args=None):
     rclpy.init(args=args)
-
     node = KeyboardControlNode()
 
     try:

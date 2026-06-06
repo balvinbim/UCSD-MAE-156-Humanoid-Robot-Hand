@@ -15,8 +15,8 @@ class JointCommandBridgeNode(Node):
         self.declare_parameter('max_roll_deg', 259.0)
         self.declare_parameter('max_pitch_deg', 79.0)
         self.declare_parameter('max_yaw_deg', 79.0)
-        self.declare_parameter('min_grip_deg', 0.0)
-        self.declare_parameter('max_grip_deg', 30.0)
+        self.declare_parameter('min_grip_deg', -15.0)
+        self.declare_parameter('max_grip_deg', 38.0)
 
         self.max_roll_deg = float(self.get_parameter('max_roll_deg').value)
         self.max_pitch_deg = float(self.get_parameter('max_pitch_deg').value)

@@ -49,7 +49,13 @@ class DynamixelControllerNode(Node):
         self.declare_parameter('max_roll_deg', 259.0)
         self.declare_parameter('max_pitch_deg', 79.0)
         self.declare_parameter('max_yaw_deg', 79.0)
-        self.declare_parameter('max_grip_deg', 30.0)
+
+        # Calibrated gripper range.
+        # Current mechanical setup:
+        #   open  = -15 deg
+        #   close = 38 deg
+        self.declare_parameter('min_grip_deg', -15.0)
+        self.declare_parameter('max_grip_deg', 38.0)
 
         self.device_name = self.get_parameter('device_name').value
         self.baudrate = int(self.get_parameter('baudrate').value)
@@ -66,6 +72,7 @@ class DynamixelControllerNode(Node):
         self.max_roll_deg = float(self.get_parameter('max_roll_deg').value)
         self.max_pitch_deg = float(self.get_parameter('max_pitch_deg').value)
         self.max_yaw_deg = float(self.get_parameter('max_yaw_deg').value)
+        self.min_grip_deg = float(self.get_parameter('min_grip_deg').value)
         self.max_grip_deg = float(self.get_parameter('max_grip_deg').value)
 
         # -----------------------------
@@ -85,6 +92,16 @@ class DynamixelControllerNode(Node):
 
         # 4096 counts = 360 deg.
         self.COUNTS_PER_DEGREE = 4096.0 / 360.0
+
+        # Motor direction correction.
+        # Motors 3 and 4 are reversed because their physical clockwise/counterclockwise
+        # directions are opposite of what the coupling matrix expects.
+        self.motor_direction = {
+            1: 1.0,
+            2: 1.0,
+            3: -1.0,
+            4: -1.0,
+        }
 
         # -----------------------------
         # dVRK coupling matrix
@@ -108,16 +125,21 @@ class DynamixelControllerNode(Node):
             1: (-166.0, 166.0),
             2: (-78.5, 78.5),
             3: (-150.0, 150.0),
-            4: (-150.0, 150.0),
+            4: (-153.0, 153.0),
         }
 
         self.motor_position_limits = {}
 
         for dxl_id, home_position in zip(self.motor_ids, self.home_positions):
             min_deg, max_deg = self.disk_angle_limits_deg[dxl_id]
-            min_count = int(home_position + min_deg * self.COUNTS_PER_DEGREE)
-            max_count = int(home_position + max_deg * self.COUNTS_PER_DEGREE)
-            self.motor_position_limits[dxl_id] = (min_count, max_count)
+
+            min_count_raw = self.disk_angle_to_motor_position(dxl_id, min_deg)
+            max_count_raw = self.disk_angle_to_motor_position(dxl_id, max_deg)
+
+            self.motor_position_limits[dxl_id] = (
+                min(min_count_raw, max_count_raw),
+                max(min_count_raw, max_count_raw),
+            )
 
         self.dxl_lock = threading.Lock()
         self.state_lock = threading.Lock()
@@ -188,6 +210,12 @@ class DynamixelControllerNode(Node):
         self.get_logger().warn('Dynamixel controller ready for ACTUAL OPERATION.')
         self.get_logger().warn('Make sure auto-zero was completed before using RViz control.')
         self.get_logger().warn('Emergency stop topic: /h4hr/estop std_msgs/Bool true')
+        self.get_logger().info(
+            f'Grip range: {self.min_grip_deg:.1f} deg to {self.max_grip_deg:.1f} deg'
+        )
+        self.get_logger().info(
+            f'Motor direction correction: {self.motor_direction}'
+        )
 
     # -----------------------------
     # Connection and Dynamixel I/O
@@ -348,11 +376,23 @@ class DynamixelControllerNode(Node):
         index = self.motor_ids.index(dxl_id)
         return int(self.home_positions[index])
 
+    def get_motor_direction(self, dxl_id):
+        return float(self.motor_direction.get(dxl_id, 1.0))
+
     def disk_angle_to_motor_position(self, dxl_id, disk_angle_deg):
-        return int(self.get_home_position(dxl_id) + disk_angle_deg * self.COUNTS_PER_DEGREE)
+        direction = self.get_motor_direction(dxl_id)
+
+        return int(
+            self.get_home_position(dxl_id)
+            + direction * disk_angle_deg * self.COUNTS_PER_DEGREE
+        )
 
     def motor_position_to_disk_angle(self, dxl_id, position):
-        return float(position - self.get_home_position(dxl_id)) / self.COUNTS_PER_DEGREE
+        direction = self.get_motor_direction(dxl_id)
+
+        return float(position - self.get_home_position(dxl_id)) / (
+            direction * self.COUNTS_PER_DEGREE
+        )
 
     def is_position_inside_bounds(self, dxl_id, position):
         if dxl_id not in self.motor_position_limits:
@@ -362,10 +402,26 @@ class DynamixelControllerNode(Node):
         return min_position <= int(position) <= max_position
 
     def clamp_joint_targets(self, targets):
-        targets['roll'] = max(-self.max_roll_deg, min(self.max_roll_deg, targets['roll']))
-        targets['pitch'] = max(-self.max_pitch_deg, min(self.max_pitch_deg, targets['pitch']))
-        targets['yaw'] = max(-self.max_yaw_deg, min(self.max_yaw_deg, targets['yaw']))
-        targets['grip'] = max(0.0, min(self.max_grip_deg, targets['grip']))
+        targets['roll'] = max(
+            -self.max_roll_deg,
+            min(self.max_roll_deg, targets['roll'])
+        )
+
+        targets['pitch'] = max(
+            -self.max_pitch_deg,
+            min(self.max_pitch_deg, targets['pitch'])
+        )
+
+        targets['yaw'] = max(
+            -self.max_yaw_deg,
+            min(self.max_yaw_deg, targets['yaw'])
+        )
+
+        targets['grip'] = max(
+            self.min_grip_deg,
+            min(self.max_grip_deg, targets['grip'])
+        )
+
         return targets
 
     def joints_to_disks(self, joints_deg):
@@ -440,9 +496,13 @@ class DynamixelControllerNode(Node):
             self.last_log_time = now
             self.get_logger().info(
                 f"Target joint deg: R={targets['roll']:.1f}, "
-                f"P={targets['pitch']:.1f}, Y={targets['yaw']:.1f}, G={targets['grip']:.1f} | "
-                f"Disk deg: D1={disk_angles[1]:.1f}, D2={disk_angles[2]:.1f}, "
-                f"D3={disk_angles[3]:.1f}, D4={disk_angles[4]:.1f}"
+                f"P={targets['pitch']:.1f}, "
+                f"Y={targets['yaw']:.1f}, "
+                f"G={targets['grip']:.1f} | "
+                f"Disk deg: D1={disk_angles[1]:.1f}, "
+                f"D2={disk_angles[2]:.1f}, "
+                f"D3={disk_angles[3]:.1f}, "
+                f"D4={disk_angles[4]:.1f}"
             )
 
     def enable_callback(self, msg):

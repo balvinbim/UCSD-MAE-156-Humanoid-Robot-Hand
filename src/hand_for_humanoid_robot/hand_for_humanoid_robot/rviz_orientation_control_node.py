@@ -29,7 +29,13 @@ class RvizOrientationControlNode(Node):
         self.declare_parameter('max_roll_deg', 259.0)
         self.declare_parameter('max_pitch_deg', 79.0)
         self.declare_parameter('max_yaw_deg', 79.0)
-        self.declare_parameter('max_grip_deg', 30.0)
+
+        # Updated calibrated gripper range.
+        # Current mechanical setup:
+        #   open  = -15 deg
+        #   close = 38 deg
+        self.declare_parameter('min_grip_deg', -15.0)
+        self.declare_parameter('max_grip_deg', 38.0)
 
         self.declare_parameter('grip_marker_min_x', -0.20)
         self.declare_parameter('grip_marker_max_x', 0.20)
@@ -49,6 +55,7 @@ class RvizOrientationControlNode(Node):
         self.max_roll_deg = float(self.get_parameter('max_roll_deg').value)
         self.max_pitch_deg = float(self.get_parameter('max_pitch_deg').value)
         self.max_yaw_deg = float(self.get_parameter('max_yaw_deg').value)
+        self.min_grip_deg = float(self.get_parameter('min_grip_deg').value)
         self.max_grip_deg = float(self.get_parameter('max_grip_deg').value)
 
         self.grip_marker_min_x = float(self.get_parameter('grip_marker_min_x').value)
@@ -68,9 +75,11 @@ class RvizOrientationControlNode(Node):
         self.roll_deg = 0.0
         self.pitch_deg = 0.0
         self.yaw_deg = 0.0
-        self.grip_deg = 0.0
 
-        # Previous quaternion position for free cube rotations
+        # Start gripper at open position.
+        self.grip_deg = self.min_grip_deg
+
+        # Previous quaternion position for free cube rotations.
         self.prev_raw_quat = None
 
         # Previous raw angles for individual rings.
@@ -79,7 +88,7 @@ class RvizOrientationControlNode(Node):
         self.prev_ring_yaw_quat = None
 
         self.last_keyboard_msg_time = 0.0
-        self.keyboard_grip_deg = 0.0
+        self.keyboard_grip_deg = self.min_grip_deg
 
         self.server = InteractiveMarkerServer(
             self,
@@ -111,6 +120,7 @@ class RvizOrientationControlNode(Node):
         self.get_logger().info('Cube controls combined roll/pitch/yaw.')
         self.get_logger().info('Rings control one joint only.')
         self.get_logger().info('Keyboard space controls grip through /h4hr/keyboard_tool_command.')
+        self.get_logger().info('Gripper calibrated range: open=-15 deg, close=38 deg.')
         self.get_logger().info('In RViz, add InteractiveMarkers topic: /dvrk_orientation_marker_server/update')
 
     def clamp(self, value, lower, upper):
@@ -170,7 +180,7 @@ class RvizOrientationControlNode(Node):
         marker = InteractiveMarker()
         marker.header.frame_id = self.frame_id
         marker.name = self.marker_name
-        marker.description = 'Cube = free R/P/Y, rings = one-axis R/P/Y'
+        marker.description = 'Red  = Roll | Blue = Pitch | Green = Yaw | Cube = 3D Motion'
         marker.scale = self.marker_scale
 
         marker.pose.position.x = self.initial_x
@@ -244,9 +254,10 @@ class RvizOrientationControlNode(Node):
         marker = InteractiveMarker()
         marker.header.frame_id = self.frame_id
         marker.name = self.grip_marker_name
-        marker.description = 'Drag right = open gripper'
+        marker.description = 'Gripper slider: left = open, right = close'
         marker.scale = 0.25
 
+        # Start slider at open position.
         marker.pose.position.x = self.grip_marker_min_x
         marker.pose.position.y = self.grip_marker_y
         marker.pose.position.z = self.grip_marker_z
@@ -305,14 +316,14 @@ class RvizOrientationControlNode(Node):
         x, y, z, w = q
         sinr_cosp = 2.0 * (w*x + y*z)
         cosr_cosp = 1.0 - 2.0 * (x*x + y*y)
-        roll_rad  = math.atan2(sinr_cosp, cosr_cosp)
+        roll_rad = math.atan2(sinr_cosp, cosr_cosp)
 
         sinp = max(-1.0, min(1.0, 2.0 * (w*y - z*x)))
         pitch_rad = math.asin(sinp)
 
         siny_cosp = 2.0 * (w*z + x*y)
         cosy_cosp = 1.0 - 2.0 * (y*y + z*z)
-        yaw_rad   = math.atan2(siny_cosp, cosy_cosp)
+        yaw_rad = math.atan2(siny_cosp, cosy_cosp)
 
         return math.degrees(roll_rad), math.degrees(pitch_rad), math.degrees(yaw_rad)
 
@@ -355,9 +366,12 @@ class RvizOrientationControlNode(Node):
             else:
                 grip_ratio = (x - self.grip_marker_min_x) / travel
 
+            # Map slider range:
+            # left  = min_grip_deg = open
+            # right = max_grip_deg = close
             self.grip_deg = self.clamp(
-                grip_ratio * self.max_grip_deg,
-                0.0,
+                self.min_grip_deg + grip_ratio * (self.max_grip_deg - self.min_grip_deg),
+                self.min_grip_deg,
                 self.max_grip_deg
             )
 
@@ -511,7 +525,7 @@ class RvizOrientationControlNode(Node):
 
         return self.clamp(
             grip_deg,
-            0.0,
+            self.min_grip_deg,
             self.max_grip_deg
         )
 

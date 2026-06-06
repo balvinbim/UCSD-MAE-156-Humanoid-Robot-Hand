@@ -1,504 +1,843 @@
 # UCSD MAE 156 Humanoid Robot Hand
 
-This repository contains the ROS2 software framework for controlling a humanoid robot hand tool interface using an OpenRB-150 controller and four Dynamixel motors.
+This repository contains the ROS2 Humble software framework for controlling a humanoid robot hand tool interface using an OpenRB-150 controller, four Dynamixel XC330-T181-T motors, RViz control, keyboard control, auto-zeroing, and future RFID-based tool detection.
 
-The system was developed to actuate and test a robotic hand/tool mechanism for integration with a humanoid robot platform. The ROS2 package provides motor communication, motor homing, motor position feedback, manual keyboard control, and RViz-based interactive marker control.
+The system was developed for a custom humanoid robot hand adapter designed to actuate da Vinci Research Kit / dVRK-style tool mechanisms. The software converts desired tool commands such as roll, pitch, yaw, and grip into Dynamixel motor positions using a coupling matrix.
 
 ---
 
 ## 1. System Overview
 
-The device consists of:
+The system consists of:
 
-- One OpenRB-150 controller
-- Four Dynamixel motors
-- A ROS2 computer running Ubuntu
-- A custom mechanical hand/tool adapter
-- Optional RViz visualization and interactive marker control
-
-The OpenRB-150 communicates with the computer over USB. ROS2 nodes send position commands to the motors and read back motor position data.
+* Ubuntu computer running ROS2 Humble
+* OpenRB-150 controller
+* Four Dynamixel XC330-T181-T motors
+* Custom mechanical hand/tool adapter
+* RViz2 interactive control interface
+* Standalone numpad keyboard control
+* Auto-zero startup sequence
+* Optional PN532 RFID reader for future tool identification
 
 Basic communication flow:
 
-
-Ubuntu Computer
-    |
-    | USB Serial
-    v
-OpenRB-150
-    |
-    | Dynamixel Bus
-    v
+```text
+Ubuntu ROS2 Computer
+        |
+        | USB Serial
+        v
+OpenRB-150 Controller
+        |
+        | Dynamixel Bus
+        v
 Four Dynamixel Motors
-    |
-    v
-Humanoid Robot Hand Tool Mechanism
-## 2. Repository Structure
+        |
+        v
+Humanoid Robot Hand / dVRK Tool Adapter
+```
 
-Expected workspace structure:
+The ROS2 system sends tool-level commands such as roll, pitch, yaw, and grip. These commands are converted into individual motor/disk commands using the dVRK coupling matrix.
 
+---
+
+## 2. Main Repository Structure
+
+Expected ROS2 workspace structure:
+
+```text
 robotis_ws/
 ├── src/
 │   └── hand_for_humanoid_robot/
 │       ├── package.xml
 │       ├── setup.py
-│       ├── resource/
+│       ├── launch/
+│       │   └── rviz_orientation_control.launch.py
+│       ├── rviz/
+│       │   └── rviz_orientation_control.rviz
 │       └── hand_for_humanoid_robot/
-│           ├── keyboard_control_node.py
+│           ├── __init__.py
 │           ├── auto_zero_node.py
-│           ├── motor_position_publisher_node.py
-│           └── rviz_control_node.py
-├── README.md
-└── .gitignore
+│           ├── dynamixel_controller_node.py
+│           ├── hand_for_humanoid_robot_ui_node.py
+│           ├── joint_command_bridge_node.py
+│           ├── keyboard_control_node.py
+│           ├── rfid_detection_node.py
+│           └── rviz_orientation_control_node.py
+├── build/
+├── install/
+└── log/
+```
 
 The main ROS2 package is:
 
+```text
 hand_for_humanoid_robot
+```
+
+---
+
 ## 3. Required Hardware
 
-Another lab attempting to reproduce this system should prepare the following hardware:
+| Component                       | Purpose                                            |
+| ------------------------------- | -------------------------------------------------- |
+| Ubuntu computer                 | Runs ROS2 Humble and control nodes                 |
+| OpenRB-150                      | USB-to-Dynamixel controller                        |
+| 4 Dynamixel XC330-T181-T motors | Actuate roll, pitch, yaw, and grip disks           |
+| Dynamixel power supply          | Provides motor power                               |
+| USB cable                       | Connects OpenRB-150 to the computer                |
+| Custom tool adapter             | Couples motors to the da Vinci/dVRK tool interface |
+| PN532 RFID reader               | Future tool identification                         |
+| RFID/NFC stickers               | Future tool ID tags                                |
 
-Component	Purpose
-Ubuntu computer	Runs ROS2 and control nodes
-OpenRB-150 controller	Interface between computer and Dynamixel motors
-4 Dynamixel motors	Actuate the tool mechanism
-Dynamixel power supply	Provides motor power
-USB cable	Connects OpenRB-150 to computer
-Custom mechanical adapter/tool interface	Transfers motor rotation to the hand/tool mechanism
-Optional RFID reader/tag	Future tool identification
-Optional VR/Oculus controller	Future teleoperation input
+---
 
-Current motor type used in development:
-
-Dynamixel XC330-T181-T
 ## 4. Required Software
 
 This project was developed using:
 
+```text
 Ubuntu 22.04
 ROS2 Humble
 Python 3
 Dynamixel SDK
-OpenRB-150 USB serial communication
 RViz2
+OpenRB-150 USB serial communication
+```
 
-Install common ROS2 build tools:
+Install ROS2 build tools:
 
+```bash
 sudo apt update
 sudo apt install python3-colcon-common-extensions python3-pip git
+```
 
 Install the Dynamixel SDK for Python:
 
+```bash
 pip3 install dynamixel-sdk
+```
+
+---
 
 ## 5. Clone the Repository
 
-Create or enter a ROS2 workspace:
+Create or enter the ROS2 workspace:
 
+```bash
 mkdir -p ~/robotis_ws/src
 cd ~/robotis_ws/src
+```
 
 Clone the repository:
 
-git clone https://github.com/balvinbim/UCSD-MAE-156-Humanoid-Robot-Hand.git
+```bash
+git clone https://github.com/balvinbim/UCSD-MAE-156-Humanoid-Robot-Hand.git hand_for_humanoid_robot
+```
 
-The final structure should look like:
+Expected final path:
 
+```text
 ~/robotis_ws/src/hand_for_humanoid_robot
+```
+
+---
 
 ## 6. Build the ROS2 Package
 
 From the workspace root:
 
+```bash
 cd ~/robotis_ws
 colcon build --packages-select hand_for_humanoid_robot
 source install/setup.bash
+```
 
-Optional: add the workspace source command to .bashrc:
+Optional: source the workspace automatically when opening a terminal:
 
+```bash
 echo "source ~/robotis_ws/install/setup.bash" >> ~/.bashrc
 source ~/.bashrc
+```
 
-## 7. Hardware Connection Procedure
+Check that ROS2 sees the package:
 
-Before running any nodes:
+```bash
+ros2 pkg list | grep hand_for_humanoid_robot
+```
 
-Connect the Dynamixel motors to the OpenRB-150.
-Connect the OpenRB-150 to the computer using USB.
-Connect motor power.
-Verify that the OpenRB-150 appears as a serial device.
+Check available executables:
 
-Check USB devices:
+```bash
+ros2 pkg executables hand_for_humanoid_robot
+```
 
-ls /dev/tty*
+---
 
-Recommended check:
+## 7. OpenRB-150 and Motor Setup
 
+Connect the hardware in this order:
+
+```text
+Computer USB -> OpenRB-150 -> Dynamixel bus -> 4 Dynamixel motors
+```
+
+Then connect motor power.
+
+Check that the OpenRB appears on Ubuntu:
+
+```bash
+ls /dev/ttyACM*
 ls /dev/serial/by-id/
+```
 
 A stable device path may look similar to:
 
-/dev/serial/by-id/usb-ROBOTIS_OpenRB-150_...
+```text
+/dev/serial/by-id/usb-ROBOTIS_OpenRB-150_F42208A55157375037202020FF122F34-if00
+```
 
-If the code uses a specific serial path, update the device_name parameter in the node or launch file.
+The current launch file uses this stable `/dev/serial/by-id/` path by default. If another OpenRB is used, update the `device_name` launch argument or node parameter.
+
+---
 
 ## 8. Motor Configuration
 
-Each motor should have a unique Dynamixel ID.
+Expected motor IDs:
 
-Example expected motor IDs:
+| Motor   | Dynamixel ID | Function                    |
+| ------- | -----------: | --------------------------- |
+| Motor 1 |            1 | Disk 1 / Roll-related disk  |
+| Motor 2 |            2 | Disk 2 / Pitch-related disk |
+| Motor 3 |            3 | Disk 3 / Yaw + Grip disk    |
+| Motor 4 |            4 | Disk 4 / Yaw + Grip disk    |
 
-Motor 1: ID 1
-Motor 2: ID 2
-Motor 3: ID 3
-Motor 4: ID 4
+Before running ROS2, use Dynamixel Wizard to verify:
 
-The motors should be configured using Dynamixel Wizard before running the ROS2 system.
+* Each motor is detected
+* Each motor has a unique ID
+* The baud rate is 57600
+* The motors respond to position commands
+* The OpenRB-150 is flashed with the USB-to-Dynamixel sketch
+* The mechanical limits are safe
 
-Recommended checks:
-
-Confirm all motors are detected.
-Confirm each motor has a unique ID.
-Confirm the baud rate matches the code.
-Confirm the motors are in position control or extended position control mode, depending on the node.
-Confirm motor directions and limits are safe for the mechanical tool.
+---
 
 ## 9. Safety Warning
 
-This system controls physical motors connected to a mechanical tool. Incorrect motor commands can damage the tool or cause injury.
+This project controls physical motors connected to a mechanical tool interface. Incorrect commands can damage the mechanism or cause injury.
 
 Before running any control node:
 
-Keep hands clear of the mechanism.
-Start with the tool disconnected if testing software for the first time.
-Verify motor IDs before sending commands.
-Verify home positions before inserting the tool.
-Use low speeds during initial testing.
-Confirm software limits match the mechanical limits.
-Be ready to disconnect motor power if the mechanism moves unexpectedly.
+* Keep hands clear of the mechanism
+* Keep one hand near the motor power switch
+* Verify motor IDs before commanding motion
+* Verify home positions before inserting the tool
+* Use low speed during initial testing
+* Confirm software limits match the physical mechanism
+* Do not run two nodes that use the OpenRB serial port at the same time
+* Press emergency stop or disconnect power if motion is unexpected
 
-## 10. Main ROS2 Nodes
+The OpenRB serial port can only be owned by one motor-control node at a time.
 
-The package contains several ROS2 nodes. Each node is responsible for a different part of the control system.
+Do not run these together:
 
-To view all available nodes:
+```text
+auto_zero_node
+dynamixel_controller_node
+keyboard_control_node
+rfid_detection_node
+Dynamixel Wizard
+Arduino Serial Monitor
+```
 
-cd ~/robotis_ws
-source install/setup.bash
-ros2 pkg executables hand_for_humanoid_robot
+---
 
-# 10.1 Auto Zero Node
-Purpose
+## 10. Current Main Nodes
 
-The auto zero node moves all motors to predefined home positions. This establishes a known starting configuration before tool insertion or operation.
+### 10.1 `auto_zero_node.py`
 
-This node is used at the beginning of a test session to make sure the tool mechanism starts from a repeatable and safe position.
+Purpose:
 
-Typical Responsibilities
-Connect to the OpenRB-150.
-Enable motor torque.
-Move all four Dynamixel motors to home positions.
-Prepare the mechanism for tool insertion.
-Reduce the chance of starting from an unsafe or unknown motor angle.
-Example Home Positions
+```text
+Runs the startup homing and tool preparation sequence.
+```
 
-The home positions may be defined in the code like this:
+Responsibilities:
 
-home_positions = [2048, 0, 2048, 3072]
+* Opens the OpenRB/Dynamixel serial port
+* Waits for no-tool confirmation
+* Homes the motors
+* Waits for tool insertion confirmation
+* Runs the auto-zero sweep
+* Publishes auto-zero status
+* Exits after successful auto-zero so the main controller can start
 
-These values are motor encoder positions and must be adjusted to match the mechanical assembly.
+Main topics:
 
-Run Command
+```text
+Subscribes:
+  /h4hr/confirm_no_tool
+  /h4hr/confirm_tool_insertion
+  /h4hr/emergency_stop
+
+Publishes:
+  /h4hr/auto_zero_status
+  /h4hr/auto_zero_ready
+  /joint_states
+```
+
+Run alone:
+
+```bash
 cd ~/robotis_ws
 source install/setup.bash
 ros2 run hand_for_humanoid_robot auto_zero_node
-When to Use
+```
 
-Use this node:
+---
 
-Before inserting the tool.
-Before starting keyboard control.
-Before starting RViz control.
-After powering on the motors.
-After any unexpected movement or reset.
-Expected Result
+### 10.2 `dynamixel_controller_node.py`
 
-All motors should move to their defined home positions and stop.
+Purpose:
 
-# 10.2 Keyboard Control Node
-Purpose
+```text
+Main physical motor controller for normal RViz operation.
+```
 
-The keyboard control node allows manual control of the motors using keyboard inputs. This is useful for early testing, debugging, and checking individual motor movement.
+Responsibilities:
 
-Typical Responsibilities
-Connect to the OpenRB-150.
-Enable torque on the Dynamixel motors.
-Receive keyboard commands from the user.
-Convert key presses into motor position changes.
-Send position commands to the motors.
-Keep motion within defined software limits.
-Run Command
+* Opens the OpenRB/Dynamixel serial port
+* Subscribes to cleaned joint commands
+* Converts roll, pitch, yaw, and grip into disk angles
+* Converts disk angles into Dynamixel goal positions
+* Commands motors 1 through 4
+* Publishes joint states
+* Handles enable/disable and emergency stop behavior
+
+Main topics:
+
+```text
+Subscribes:
+  /h4hr/joint_command
+  /h4hr/enable_control
+  /h4hr/estop
+
+Publishes:
+  /joint_states
+```
+
+Run alone:
+
+```bash
+cd ~/robotis_ws
+source install/setup.bash
+ros2 run hand_for_humanoid_robot dynamixel_controller_node
+```
+
+---
+
+### 10.3 `rviz_orientation_control_node.py`
+
+Purpose:
+
+```text
+Creates the RViz interactive control marker for tool roll, pitch, yaw, and grip.
+```
+
+Responsibilities:
+
+* Creates the RViz orientation marker
+* Creates the gripper control marker
+* Stores the current desired roll/pitch/yaw/grip command
+* Publishes target tool joint commands
+
+Main topic:
+
+```text
+Publishes:
+  /target_tool_joints
+```
+
+This node does not directly command the motors. It sends target joint commands to the bridge node.
+
+---
+
+### 10.4 `joint_command_bridge_node.py`
+
+Purpose:
+
+```text
+Converts RViz target tool joints into the command format used by the motor controller.
+```
+
+Responsibilities:
+
+* Subscribes to `/target_tool_joints`
+* Converts radians to degrees internally
+* Clamps roll, pitch, yaw, and grip to safe limits
+* Publishes cleaned commands to `/h4hr/joint_command`
+
+Main topics:
+
+```text
+Subscribes:
+  /target_tool_joints
+
+Publishes:
+  /h4hr/joint_command
+```
+
+---
+
+### 10.5 `hand_for_humanoid_robot_ui_node.py`
+
+Purpose:
+
+```text
+Simple terminal UI for startup confirmations and reset commands.
+```
+
+Keyboard options:
+
+```text
+n = confirm no tool inserted
+y = confirm tool inserted
+r = reset RViz command and motor command to home
+? = show menu
+q = quit UI node
+```
+
+Main topics:
+
+```text
+Publishes:
+  /h4hr/confirm_no_tool
+  /h4hr/confirm_tool_insertion
+  /target_tool_joints
+  /h4hr/joint_command
+```
+
+Run separately:
+
+```bash
+cd ~/robotis_ws
+source install/setup.bash
+ros2 run hand_for_humanoid_robot hand_for_humanoid_robot_ui_node
+```
+
+---
+
+### 10.6 `keyboard_control_node.py`
+
+Purpose:
+
+```text
+Standalone direct keyboard/numpad control for bench testing.
+```
+
+This node directly opens the OpenRB/Dynamixel serial port and commands the motors. It should not run at the same time as the main RViz launch or the Dynamixel controller node.
+
+Current numpad mapping:
+
+```text
+7 = forward + left + roll left
+8 = forward
+9 = forward + right + roll right
+
+4 = left / yaw left
+5 = hold current position
+6 = right / yaw right
+
+1 = backward + left + roll left
+2 = backward
+3 = backward + right + roll right
+
+0 = return all joints to zero / home command
+. = toggle gripper open/close
+
++ = increase joint step
+- = decrease joint step
+e = emergency torque off
+` = quit
+```
+
+Important current behavior:
+
+* Motors 3 and 4 are direction-corrected in software
+* Grip direction is inverted for the current mechanical setup
+* Close command goes farther than open to improve tool closing
+
+Run separately:
+
+```bash
 cd ~/robotis_ws
 source install/setup.bash
 ros2 run hand_for_humanoid_robot keyboard_control_node
-When to Use
+```
 
-Use this node:
+Make sure Num Lock is ON.
 
-To test one motor at a time.
-To verify that each motor responds correctly.
-To check the relationship between motor movement and tool movement.
-To manually move the tool during bench testing.
-Expected Result
+---
 
-Pressing assigned keys should move the selected motors in small controlled increments.
+### 10.7 `rfid_detection_node.py`
 
-Notes for New Labs
+Purpose:
 
-Before using this node with the tool attached, test with the motors unloaded or with the mechanism disconnected. Confirm that positive and negative motion directions match the mechanical design.
+```text
+Future tool identification using a PN532 RFID/NFC reader connected through the OpenRB.
+```
 
-# 10.3 Motor Position Publisher Node
-Purpose
+Current intended flow:
 
-The motor position publisher node reads the current encoder position of each Dynamixel motor and publishes the positions to a ROS2 topic.
+```text
+RFID sticker -> PN532 -> OpenRB-150 -> USB serial -> ROS2 RFID node
+```
 
-This is useful for debugging, calibration, and checking whether a motor is offset from its expected home position.
+This node is not currently part of the main launch sequence. It should not run at the same time as motor-control nodes unless the OpenRB sketch and serial communication strategy are designed to support both.
 
-Typical Responsibilities
-Connect to the OpenRB-150.
-Read present position values from all motors.
-Publish motor positions to a ROS2 topic.
-Allow other ROS2 nodes or users to monitor motor feedback.
-Run Command
+---
+
+## 11. Main Launch File
+
+The current main launch file is:
+
+```text
+rviz_orientation_control.launch.py
+```
+
+Location:
+
+```text
+~/robotis_ws/src/hand_for_humanoid_robot/launch/rviz_orientation_control.launch.py
+```
+
+It launches:
+
+```text
+auto_zero_node
+static_transform_publisher
+rviz_orientation_control_node
+joint_command_bridge_node
+dynamixel_controller_node
+rviz2
+```
+
+When `run_auto_zero:=true`, the launch file starts `auto_zero_node` first. After auto-zero exits successfully, the main control nodes start. This prevents `auto_zero_node` and `dynamixel_controller_node` from fighting over the same OpenRB serial port.
+
+Run with auto-zero:
+
+```bash
 cd ~/robotis_ws
 source install/setup.bash
-ros2 run hand_for_humanoid_robot motor_position_publisher_node
-View Published Data
+ros2 launch hand_for_humanoid_robot rviz_orientation_control.launch.py
+```
+
+Run without auto-zero:
+
+```bash
+cd ~/robotis_ws
+source install/setup.bash
+ros2 launch hand_for_humanoid_robot rviz_orientation_control.launch.py run_auto_zero:=false
+```
+
+Run without RViz:
+
+```bash
+cd ~/robotis_ws
+source install/setup.bash
+ros2 launch hand_for_humanoid_robot rviz_orientation_control.launch.py use_rviz:=false
+```
+
+---
+
+## 12. Recommended Startup Procedure
+
+### Step 1: Connect hardware
+
+```text
+Computer -> OpenRB-150 -> Dynamixel motors -> Tool adapter
+```
+
+Then connect motor power.
+
+### Step 2: Check the serial port
+
+```bash
+ls /dev/ttyACM*
+ls /dev/serial/by-id/
+```
+
+### Step 3: Build and source
+
+```bash
+cd ~/robotis_ws
+colcon build --packages-select hand_for_humanoid_robot
+source install/setup.bash
+```
+
+### Step 4: Start the UI node in a separate terminal
+
+```bash
+cd ~/robotis_ws
+source install/setup.bash
+ros2 run hand_for_humanoid_robot hand_for_humanoid_robot_ui_node
+```
+
+### Step 5: Start the main launch
 
 In another terminal:
 
+```bash
 cd ~/robotis_ws
 source install/setup.bash
-ros2 topic list
+ros2 launch hand_for_humanoid_robot rviz_orientation_control.launch.py
+```
 
-Then echo the motor position topic. The topic name depends on the code, but it may be:
+### Step 6: Use UI confirmations
 
-ros2 topic echo /motor_positions
-When to Use
+In the UI terminal:
 
-Use this node:
+```text
+n = confirm no tool inserted
+y = confirm tool inserted
+r = reset home
+```
 
-To check current motor positions.
-To compare actual positions with home positions.
-To debug a motor that appears offset.
-To verify that encoder feedback is working.
-To record motor positions during testing.
-Expected Result
+### Step 7: Control with RViz
 
-The terminal should display motor position values for each motor.
+RViz should open with the fixed frame set to `world` and the interactive marker display loaded.
 
-# 10.4 RViz Interactive Marker Control Node
-Purpose
+Use the RViz marker to command tool orientation and grip.
 
-The RViz interactive marker control node allows a user to control the motors visually through RViz. Interactive marker rings are rotated in RViz, and the node converts marker rotation into motor position commands.
+---
 
-This is intended to provide a more intuitive control interface than keyboard control.
+## 13. Standalone Keyboard Testing Procedure
 
-Typical Responsibilities
-Create interactive markers in RViz.
-Detect marker rotation.
-Convert marker rotation to motor target positions.
-Send updated position commands to Dynamixel motors.
-Provide a visual interface for testing tool movement.
-Run Command
+Use this only when the main launch is not running.
 
-Terminal 1:
+Stop other ROS2 nodes first:
 
+```bash
+pkill -f ros2
+pkill -f rviz2
+```
+
+Then run:
+
+```bash
 cd ~/robotis_ws
 source install/setup.bash
-ros2 run hand_for_humanoid_robot rviz_control_node
-
-Terminal 2:
-
-rviz2
-When to Use
-
-Use this node:
-
-To test visual control of the hand/tool.
-To debug the relationship between marker rotation and motor angle.
-To prepare for future teleoperation mapping.
-To demonstrate the control interface.
-Expected Result
-
-RViz should show interactive markers. Rotating the marker rings should command motor movement.
-
-Notes for New Labs
-
-The current marker-to-motor relationship may require calibration. A future improvement is to map one full marker rotation to the full safe joint limit of the corresponding motor/tool axis.
-
-## 11. Recommended Startup Procedure
-
-A new lab should use the following startup order.
-
-Step 1: Connect Hardware
-
-Connect:
-
-Computer → USB → OpenRB-150 → Dynamixel Motors → Tool Mechanism
-
-Make sure motor power is connected.
-
-Step 2: Build and Source
-cd ~/robotis_ws
-colcon build --packages-select hand_for_humanoid_robot
-source install/setup.bash
-Step 3: Confirm ROS2 Can See the Package
-ros2 pkg list | grep hand_for_humanoid_robot
-Step 4: Check Available Nodes
-ros2 pkg executables hand_for_humanoid_robot
-Step 5: Run Auto Zero
-ros2 run hand_for_humanoid_robot auto_zero_node
-Step 6: Check Motor Positions
-
-Terminal 1:
-
-ros2 run hand_for_humanoid_robot motor_position_publisher_node
-
-Terminal 2:
-
-source ~/robotis_ws/install/setup.bash
-ros2 topic echo /motor_positions
-Step 7: Run a Control Node
-
-For keyboard control:
-
 ros2 run hand_for_humanoid_robot keyboard_control_node
+```
 
-For RViz control:
+Make sure Num Lock is ON.
 
-ros2 run hand_for_humanoid_robot rviz_control_node
+Emergency stop:
 
-## 12. Common ROS2 Commands
+```text
+e = torque off
+```
 
-Build Package
+Quit:
+
+```text
+` = quit
+```
+
+---
+
+## 14. Common ROS2 Commands
+
+Build package:
+
+```bash
 cd ~/robotis_ws
 colcon build --packages-select hand_for_humanoid_robot
 source install/setup.bash
-List Nodes
+```
+
+List nodes:
+
+```bash
 ros2 node list
-List Topics
+```
+
+List topics:
+
+```bash
 ros2 topic list
-Echo a Topic
+```
+
+Echo a topic:
+
+```bash
 ros2 topic echo /topic_name
-Check Package Executables
+```
+
+Check package executables:
+
+```bash
 ros2 pkg executables hand_for_humanoid_robot
-Stop a Running Node
+```
 
-Press:
+Check who is publishing/subscribing to a topic:
 
+```bash
+ros2 topic info /topic_name -v
+```
+
+Stop a running node:
+
+```text
 Ctrl + C
+```
 
-in the terminal running the node.
+---
 
-## 13. Troubleshooting
-Problem: ROS2 Cannot Find the Package
+## 15. Troubleshooting
+
+### Problem: ROS2 cannot find the package
 
 Run:
 
+```bash
 cd ~/robotis_ws
 colcon build --packages-select hand_for_humanoid_robot
 source install/setup.bash
-
-Then check:
-
 ros2 pkg list | grep hand_for_humanoid_robot
-Problem: Node Does Not Run
+```
 
-Check the node names:
+### Problem: Node does not run
 
+Check the exact executable name:
+
+```bash
 ros2 pkg executables hand_for_humanoid_robot
+```
 
-Use the exact executable name shown by the command.
-
-Problem: Motors Do Not Move
+### Problem: Motors do not move
 
 Check:
 
-OpenRB-150 is connected over USB.
-Motor power is connected.
-Dynamixel IDs are correct.
-Baud rate matches the code.
-Device path is correct.
-Torque is enabled.
-Motor limits are not preventing motion.
-Problem: Permission Denied on USB Port
+* OpenRB-150 is connected over USB
+* Motor power is connected
+* OpenRB has the correct USB-to-Dynamixel sketch
+* No other process is using the serial port
+* Dynamixel IDs are correct
+* Baud rate is 57600
+* Device path is correct
+* Torque is enabled
+* Software limits are not blocking motion
 
-Try:
+Check if another program owns the port:
 
+```bash
+lsof /dev/ttyACM0
+```
+
+or:
+
+```bash
+lsof /dev/serial/by-id/usb-ROBOTIS_OpenRB-150_F42208A55157375037202020FF122F34-if00
+```
+
+### Problem: Dynamixel Wizard cannot find motors
+
+Make sure no ROS2 node is using the OpenRB serial port.
+
+Stop ROS2 nodes:
+
+```bash
+pkill -f ros2
+pkill -f rviz2
+```
+
+Then reopen Dynamixel Wizard and scan again.
+
+### Problem: Permission denied on USB port
+
+Run:
+
+```bash
 sudo usermod -a -G dialout $USER
+```
 
 Then log out and log back in.
 
-Problem: Wrong Motor Moves
+### Problem: Wrong motor moves
 
-Check motor IDs using Dynamixel Wizard. The ID in the code must match the physical motor.
+Check motor IDs in Dynamixel Wizard. The code assumes:
 
-Problem: Motor Moves in Wrong Direction
+```text
+Motor 1 = ID 1
+Motor 2 = ID 2
+Motor 3 = ID 3
+Motor 4 = ID 4
+```
 
-This may be caused by motor orientation or software sign convention. Update the direction mapping in the node code after confirming the mechanical direction is safe.
+### Problem: Motor moves in the wrong direction
 
-Problem: RViz Marker Moves but Motor Does Not Respond
+Motor direction may need to be corrected in software. The current keyboard control node includes direction correction for motors 3 and 4.
+
+### Problem: RViz marker moves but motors do not respond
 
 Check:
 
-The RViz node is running.
-The OpenRB-150 is connected.
-The marker topic is active.
-The motor command function is being called.
-The device path and motor IDs are correct.
+* `rviz_orientation_control_node` is running
+* `joint_command_bridge_node` is running
+* `dynamixel_controller_node` is running
+* OpenRB serial port is available
+* `/target_tool_joints` is changing
+* `/h4hr/joint_command` is changing
 
-## 14. Development Notes
+Useful commands:
 
-Known future improvements:
+```bash
+ros2 topic echo /target_tool_joints
+ros2 topic echo /h4hr/joint_command
+```
 
-Improve the relationship between RViz marker rotation and motor position.
-Map one full marker rotation to each motor joint limit.
-Increase motor speed carefully after safety testing.
-Improve real-time response so new commands interrupt old target motions.
-Integrate Oculus or VR controller input.
-Add RFID-based tool identification.
-Add safer launch files and parameter files.
-Add calibration documentation for each motor/tool axis.
+### Problem: UI reset works briefly, then motors return to old position
 
-## 15. Updating GitHub
+The RViz orientation control node may still be storing and republishing the old command. A future improvement is to add a dedicated reset subscriber to `rviz_orientation_control_node.py` so its internal roll/pitch/yaw/grip values reset too.
 
-After modifying code or documentation:
+---
 
+## 16. GitHub Update Commands
+
+After changing code or documentation:
+
+```bash
 cd ~/robotis_ws
 git status
 git add src/hand_for_humanoid_robot README.md .gitignore
-git commit -m "Update ROS2 hand documentation"
+git commit -m "Update ROS2 humanoid hand README"
 git push
+```
 
-If there are no changes, Git will say:
+If Git says there are no changes:
 
+```text
 nothing to commit, working tree clean
+```
 
-## 16. Important Files Not Included in GitHub
+then the repository is already up to date.
 
-The following folders should not be uploaded because they are generated by ROS2:
+---
 
+## 17. Files and Folders Not to Commit
+
+Do not upload generated ROS2 build folders:
+
+```text
 build/
 install/
 log/
+```
 
-These can be recreated with:
+Recommended `.gitignore`:
 
-colcon build
-
-The .gitignore file should include:
-
+```text
 build/
 install/
 log/
@@ -506,17 +845,33 @@ __pycache__/
 *.pyc
 .DS_Store
 .vscode/
+```
 
-After pasting, save in nano:
+---
 
-```text
-Ctrl + O
-Enter
-Ctrl + X
+## 18. Current Development Notes
 
-Then push the updated README:
+Current working features:
 
-cd ~/robotis_ws
-git add README.md
-git commit -m "Add from-scratch ROS2 hand setup manual"
-git push
+* Auto-zero startup sequence
+* RViz orientation control
+* Joint command bridge
+* Dynamixel motor controller
+* Standalone numpad keyboard control
+* Terminal UI confirmations
+* Software joint bounds
+* Disk-level safety bounds
+* Motor 3 and 4 direction correction
+* Gripper open/close testing
+
+Future improvements:
+
+* Fully integrate RFID detection into launch sequence
+* Add reset subscriber inside RViz orientation control node
+* Improve gripper calibration
+* Document final motor home positions
+* Add parameter YAML files
+* Add launch option for UI node
+* Add current sensing / motor load monitoring
+* Add VR/Oculus teleoperation input
+* Improve tool-specific calibration by RFID tag
